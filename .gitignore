@@ -1,0 +1,9 @@
+#
+# .gitignore for f2_symbol_sync
+#
+/Makefile
+project/
+target/
+test_run_dir/
+verilog/
+
