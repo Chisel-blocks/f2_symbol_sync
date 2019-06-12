@@ -1,6 +1,14 @@
-
 // Dsp-block f2_symbol_sync
-// Description here
+//
+// Take a digital IQ input stream and evaluate the correlation
+// with the 801.11n short and long training fields.  These are
+// specified in IEEE 801.11-2012, Annex L.
+//
+// The results of the correlation are squared and sent to an energy
+// detector.
+//
+// This version by Gregory Wright, 11 June 2019.
+//
 // Inititally written by dsp-blocks initmodule.sh, 20190611
 package f2_symbol_sync
 
@@ -33,7 +41,7 @@ object f2_symbol_sync extends App {
 
 //This is a simple unit tester for demonstration purposes
 class unit_tester(c: f2_symbol_sync[DspComplex[UInt]] ) extends DspTester(c) {
-//Tests are here 
+//Tests are here
     poke(c.io.A(0).real, 5)
     poke(c.io.A(0).imag, 102)
     step(5)
@@ -43,7 +51,7 @@ class unit_tester(c: f2_symbol_sync[DspComplex[UInt]] ) extends DspTester(c) {
     }
 }
 
-//This is the test driver 
+//This is the test driver
 object unit_test extends App {
     iotesters.Driver.execute(args, () => new f2_symbol_sync(
             proto=DspComplex(UInt(16.W),UInt(16.W)), n=8
