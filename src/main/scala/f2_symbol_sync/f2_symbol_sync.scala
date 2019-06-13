@@ -21,8 +21,7 @@ import breeze.math.Complex
 class f2_symbol_sync_io[T <: DspComplex[SInt], U <: SInt](inputProto: T, outputProto: U)
    extends Bundle {
         val iqSamples   = Input(inputProto.cloneType)
-        val longEnergy  = Output(outputProto.cloneType)
-        val shortEnergy = Output(outputProto.cloneType)
+        val syncMetric  = Output(outputProto.cloneType)
         override def cloneType = (new f2_symbol_sync_io(inputProto.cloneType, outputProto.cloneType)).asInstanceOf[this.type]
    }
 
@@ -170,7 +169,7 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: SInt] (
 
   longOutReg := longModulus
 
-  // Average the longModulus over four samples to get the energy estimate
+  // Average the longModulus over six samples to get the energy estimate
   val longEnergyTaps  = energyDetectorCoeffs.reverse.map(tap => longOutReg * tap)
   val longEnergyChain = RegInit(VecInit(Seq.fill(longEnergyTaps.length + 1)(0.S(resolution.W))))
 
@@ -183,10 +182,8 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: SInt] (
   }
 
   val longEnergyOut = longEnergyChain(longEnergyTaps.length)
-  val longEnergyReg = RegInit(0.S(resolution.W))
+  //val longEnergyReg = RegInit(0.S(resolution.W))
 
-  longEnergyReg := longEnergyOut
-  io.longEnergy := longEnergyReg
 
   // Compute the correlation with the short training field
   val shortChainTaps     = shortTrainingCoeffs.reverse.map(tap => inReg * tap)
@@ -208,7 +205,7 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: SInt] (
 
   shortOutReg := shortModulus
 
-  // Average the shortModulus over four samples to get the energy estimate
+  // Average the shortModulus over six samples to get the energy estimate
   val shortEnergyTaps  = energyDetectorCoeffs.reverse.map(tap => shortOutReg * tap)
   val shortEnergyChain = RegInit(VecInit(Seq.fill(shortEnergyTaps.length + 1)(0.S(resolution.W))))
 
@@ -236,10 +233,10 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: SInt] (
   }
 
   val shortDetectionOut = shortDetectionChain(shortDetectionTaps.length)
-  val shortDetectionReg = RegInit(0.S(resolution.W))
+  val detectionReg = RegInit(0.S(resolution.W))
 
-  shortDetectionReg := shortDetectionOut
-  io.shortEnergy    := shortDetectionReg
+  detectionReg  := shortDetectionOut + longEnergyOut
+  io.syncMetric := detectionReg
 }
 
 //This gives you verilog
@@ -256,7 +253,7 @@ class unit_tester(c: f2_symbol_sync[DspComplex[SInt], SInt] ) extends DspTester(
     poke(c.io.iqSamples.imag, 102)
     step(5)
     fixTolLSBs.withValue(1) {
-        expect(c.io.longEnergy, 5)
+        expect(c.io.syncMetric, 5)
     }
 }
 
