@@ -18,43 +18,87 @@ import dsptools.{DspTester, DspTesterOptionsManager, DspTesterOptions}
 import dsptools.numbers._
 import breeze.math.Complex
 
-class f2_symbol_sync_io[T <:Data](proto: T,n: Int)
+class f2_symbol_sync_io[T <: DspComplex[SInt], U <: SInt](inputProto: T, outputProto: U)
    extends Bundle {
-        val A       = Input(Vec(n,proto))
-        val B       = Output(Vec(n,proto))
-        override def cloneType = (new f2_symbol_sync_io(proto.cloneType,n)).asInstanceOf[this.type]
+        val iqSamples  = Input(inputProto.cloneType)
+        val longEnergy = Output(outputProto.cloneType)
+        override def cloneType = (new f2_symbol_sync_io(inputProto.cloneType, outputProto.cloneType)).asInstanceOf[this.type]
    }
 
-class f2_symbol_sync[T <:Data] (proto: T,n: Int) extends Module {
-    val io = IO(new f2_symbol_sync_io( proto=proto, n=n))
-    val register=RegInit(VecInit(Seq.fill(n)(0.U.asTypeOf(proto.cloneType))))
-    register:=io.A
-    io.B:=register
+class f2_symbol_sync[T <: DspComplex[SInt], U <: SInt] (
+  inputProto:  T,
+  outputProto: U,
+  n:          Int = 16,
+  resolution: Int = 32
+) extends Module {
+  val io = IO(new f2_symbol_sync_io(inputProto  = DspComplex(SInt(n.W), SInt(n.W)),
+                                    outputProto = SInt(resolution.W)))
+
+  val longTrainingCoeffs =
+    Seq(DspComplex(-16488.S(n.W),      0.S(n.W)),
+        DspComplex(  2536.S(n.W),  20716.S(n.W)),
+        DspComplex( 19448.S(n.W),  22407.S(n.W)),
+        DspComplex(-19448.S(n.W),  24310.S(n.W)),
+        DspComplex(  -634.S(n.W),  11415.S(n.W)),
+        DspComplex( 15854.S(n.W), -15643.S(n.W)),
+        DspComplex(-26847.S(n.W),  -4439.S(n.W)),
+        DspComplex(-25790.S(n.W),  -3593.S(n.W)),
+        DspComplex( -7398.S(n.W), -31920.S(n.W)),
+        DspComplex(-11838.S(n.W),  -4650.S(n.W)),
+        DspComplex(-12683.S(n.W),  17123.S(n.W)),
+        DspComplex( 14797.S(n.W),   2959.S(n.W)),
+        DspComplex( 17334.S(n.W),  19448.S(n.W)),
+        DspComplex(-27692.S(n.W),  13740.S(n.W)),
+        DspComplex(-12049.S(n.W),   8244.S(n.W)),
+        DspComplex(  7821.S(n.W),  20716.S(n.W)))
+
+  val inReg = RegInit(DspComplex.wire(0.S(n.W), 0.S(n.W)))
+
+  inReg := io.iqSamples
+
+  val longChainTaps     = longTrainingCoeffs.reverse.map(tap => inReg * tap)
+  val longTrainingChain = RegInit(VecInit(Seq.fill(longChainTaps.length + 1)(DspComplex.wire(0.S(resolution.W), 0.S(resolution.W)))))
+
+  for ( i <- 0 to longChainTaps.length - 1) {
+            if (i == 0) {
+                longTrainingChain(i + 1) := longChainTaps(i)
+            } else {
+                longTrainingChain(i + 1) := longTrainingChain(i) + longChainTaps(i)
+            }
+  }
+
+  val longChainOut = longTrainingChain(longChainTaps.length)
+
+  val outReg = RegInit(0.S(resolution.W))
+
+  val longModulus = (longChainOut.real * longChainOut.real + longChainOut.imag * longChainOut.imag)
+
+  outReg := longModulus
+  io.longEnergy := outReg
 }
 
 //This gives you verilog
 object f2_symbol_sync extends App {
     chisel3.Driver.execute(args, () => new f2_symbol_sync(
-        proto=DspComplex(UInt(16.W),UInt(16.W)), n=8)
+        inputProto = DspComplex(SInt(16.W), SInt(16.W)), outputProto = SInt(32.W))
     )
 }
 
 //This is a simple unit tester for demonstration purposes
-class unit_tester(c: f2_symbol_sync[DspComplex[UInt]] ) extends DspTester(c) {
+class unit_tester(c: f2_symbol_sync[DspComplex[SInt], SInt] ) extends DspTester(c) {
 //Tests are here
-    poke(c.io.A(0).real, 5)
-    poke(c.io.A(0).imag, 102)
+    poke(c.io.iqSamples.real, 5)
+    poke(c.io.iqSamples.imag, 102)
     step(5)
     fixTolLSBs.withValue(1) {
-        expect(c.io.B(0).real, 5)
-        expect(c.io.B(0).imag, 102)
+        expect(c.io.longEnergy, 5)
     }
 }
 
 //This is the test driver
 object unit_test extends App {
     iotesters.Driver.execute(args, () => new f2_symbol_sync(
-            proto=DspComplex(UInt(16.W),UInt(16.W)), n=8
+            inputProto = DspComplex(SInt(16.W), SInt(16.W)), outputProto = SInt(32.W)
         )
     ){
             c=>new unit_tester(c)
