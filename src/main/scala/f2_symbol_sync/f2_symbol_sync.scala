@@ -117,8 +117,34 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: SInt] (
         DspComplex( 20994.S(n.W),      0.S(n.W)),
         DspComplex( 32632.S(n.W),   2966.S(n.W)),
         DspComplex( -2966.S(n.W),  18027.S(n.W)),
-        DspComplex(-30122.S(n.W),    -456.S(n.W)),
+        DspComplex(-30122.S(n.W),   -456.S(n.W)),
         DspComplex(  5248.S(n.W),  -5248.S(n.W)))
+
+  val energyDetectorCoeffs =
+    Seq(1.S(resolution.W),
+        1.S(resolution.W),
+        1.S(resolution.W),
+        1.S(resolution.W),
+        1.S(resolution.W),
+        1.S(resolution.W))
+
+  val shortDetectionCoeffs =
+    Seq(0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W),
+        0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W),
+        0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W),
+        0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 1.S(resolution.W),
+        0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W),
+        0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W),
+        0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W),
+        0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 1.S(resolution.W),
+        0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W),
+        0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W),
+        0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W),
+        0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 1.S(resolution.W),
+        0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W),
+        0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W),
+        0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W),
+        0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 1.S(resolution.W))
 
   val inReg = RegInit(DspComplex.wire(0.S(n.W), 0.S(n.W)))
 
@@ -143,9 +169,26 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: SInt] (
   val longModulus = (longChainOut.real * longChainOut.real + longChainOut.imag * longChainOut.imag)
 
   longOutReg := longModulus
-  io.longEnergy := longOutReg
 
-  // COmpute the correlation with the short training field
+  // Average the longModulus over four samples to get the energy estimate
+  val longEnergyTaps  = energyDetectorCoeffs.reverse.map(tap => longOutReg * tap)
+  val longEnergyChain = RegInit(VecInit(Seq.fill(longEnergyTaps.length + 1)(0.S(resolution.W))))
+
+  for ( i <- 0 to longEnergyTaps.length - 1) {
+            if (i == 0) {
+                longEnergyChain(i + 1) := longEnergyTaps(i)
+            } else {
+                longEnergyChain(i + 1) := longEnergyChain(i) + longEnergyTaps(i)
+            }
+  }
+
+  val longEnergyOut = longEnergyChain(longEnergyTaps.length)
+  val longEnergyReg = RegInit(0.S(resolution.W))
+
+  longEnergyReg := longEnergyOut
+  io.longEnergy := longEnergyReg
+
+  // Compute the correlation with the short training field
   val shortChainTaps     = shortTrainingCoeffs.reverse.map(tap => inReg * tap)
   val shortTrainingChain = RegInit(VecInit(Seq.fill(shortChainTaps.length + 1)(DspComplex.wire(0.S(resolution.W), 0.S(resolution.W)))))
 
@@ -165,7 +208,38 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: SInt] (
 
   shortOutReg := shortModulus
 
-  io.shortEnergy := shortOutReg
+  // Average the shortModulus over four samples to get the energy estimate
+  val shortEnergyTaps  = energyDetectorCoeffs.reverse.map(tap => shortOutReg * tap)
+  val shortEnergyChain = RegInit(VecInit(Seq.fill(shortEnergyTaps.length + 1)(0.S(resolution.W))))
+
+  for ( i <- 0 to shortEnergyTaps.length - 1) {
+            if (i == 0) {
+                shortEnergyChain(i + 1) := shortEnergyTaps(i)
+            } else {
+                shortEnergyChain(i + 1) := shortEnergyChain(i) + shortEnergyTaps(i)
+            }
+  }
+
+  val shortEnergyOut = shortEnergyChain(shortEnergyTaps.length)
+
+  // Run the detection filter given on p.206 of A. Sibille, C. Oestges and A. Zanello,
+  // MIMO: From Theory to Implementation, Burlington, MA: Academic Press, 2011.
+  val shortDetectionTaps  = energyDetectorCoeffs.reverse.map(tap => shortEnergyOut * tap)
+  val shortDetectionChain = RegInit(VecInit(Seq.fill(shortDetectionTaps.length + 1)(0.S(resolution.W))))
+
+  for ( i <- 0 to shortDetectionTaps.length - 1) {
+            if (i == 0) {
+                shortDetectionChain(i + 1) := shortDetectionTaps(i)
+            } else {
+                shortDetectionChain(i + 1) := shortDetectionChain(i) + shortDetectionTaps(i)
+            }
+  }
+
+  val shortDetectionOut = shortDetectionChain(shortDetectionTaps.length)
+  val shortDetectionReg = RegInit(0.S(resolution.W))
+
+  shortDetectionReg := shortDetectionOut
+  io.shortEnergy    := shortDetectionReg
 }
 
 //This gives you verilog
