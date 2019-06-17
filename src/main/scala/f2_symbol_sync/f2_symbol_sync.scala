@@ -10,6 +10,8 @@
 // This version by Gregory Wright, 11 June 2019.
 //
 // Inititally written by dsp-blocks initmodule.sh, 20190611
+//
+
 package f2_symbol_sync
 
 import chisel3.experimental._
@@ -18,160 +20,158 @@ import dsptools.{DspTester, DspTesterOptionsManager, DspTesterOptions}
 import dsptools.numbers._
 import breeze.math.Complex
 
-class f2_symbol_sync_io[T <: DspComplex[SInt], U <: SInt](inputProto: T, outputProto: U)
+class f2_symbol_sync_io[T <: DspComplex[SInt], U <: UInt](inputProto: T, outputProto: U)
    extends Bundle {
         val iqSamples   = Input(inputProto.cloneType)
         val syncMetric  = Output(outputProto.cloneType)
+        val longEnergy  = Output(outputProto.cloneType)
+        val shortEnergy = Output(outputProto.cloneType)
         override def cloneType = (new f2_symbol_sync_io(inputProto.cloneType, outputProto.cloneType)).asInstanceOf[this.type]
    }
 
-class f2_symbol_sync[T <: DspComplex[SInt], U <: SInt] (
+class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt] (
   inputProto:  T,
   outputProto: U,
   n:          Int = 16,
   resolution: Int = 32
 ) extends Module {
   val io = IO(new f2_symbol_sync_io(inputProto  = DspComplex(SInt(n.W), SInt(n.W)),
-                                    outputProto = SInt(resolution.W)))
+                                    outputProto = UInt(resolution.W)))
 
-  val longTrainingCoeffs =
-    Seq(DspComplex(-16488.S(n.W),      0.S(n.W)),
-        DspComplex(  2536.S(n.W),  20716.S(n.W)),
-        DspComplex( 19448.S(n.W),  22407.S(n.W)),
-        DspComplex(-19448.S(n.W),  24310.S(n.W)),
-        DspComplex(  -634.S(n.W),  11415.S(n.W)),
-        DspComplex( 15854.S(n.W), -15643.S(n.W)),
-        DspComplex(-26847.S(n.W),  -4439.S(n.W)),
-        DspComplex(-25790.S(n.W),  -3593.S(n.W)),
-        DspComplex( -7398.S(n.W), -31920.S(n.W)),
-        DspComplex(-11838.S(n.W),  -4650.S(n.W)),
-        DspComplex(-12683.S(n.W),  17123.S(n.W)),
-        DspComplex( 14797.S(n.W),   2959.S(n.W)),
-        DspComplex( 17334.S(n.W),  19448.S(n.W)),
-        DspComplex(-27692.S(n.W),  13740.S(n.W)),
-        DspComplex(-12049.S(n.W),   8244.S(n.W)),
-        DspComplex(  7821.S(n.W),  20716.S(n.W)))
+  val inRegType = DspComplex(FixedPoint(n.W, (n-2).BP), FixedPoint(n.W, (n-2).BP)).cloneType
 
 
-  val shortTrainingCoeffs =
-    Seq(DspComplex(   456.S(n.W),  30122.S(n.W)),
-        DspComplex(-18027.S(n.W),   2966.S(n.W)),
-        DspComplex( -2966.S(n.W), -32632.S(n.W)),
-        DspComplex(     0.S(n.W), -20994.S(n.W)),
-        DspComplex( -2966.S(n.W), -32632.S(n.W)),
-        DspComplex(-18027.S(n.W),   2966.S(n.W)),
-        DspComplex(   456.S(n.W),  30122.S(n.W)),
-        DspComplex( 10497.S(n.W), -10497.S(n.W)),
-        DspComplex(-30122.S(n.W),   -456.S(n.W)),
-        DspComplex( -2966.S(n.W),  18027.S(n.W)),
-        DspComplex( 32632.S(n.W),   2966.S(n.W)),
-        DspComplex( 20994.S(n.W),      0.S(n.W)),
-        DspComplex( 32632.S(n.W),   2966.S(n.W)),
-        DspComplex( -2966.S(n.W),  18027.S(n.W)),
-        DspComplex(-30122.S(n.W),   -456.S(n.W)),
-        DspComplex( 10497.S(n.W), -10497.S(n.W)),
-        DspComplex(   456.S(n.W),  30122.S(n.W)),
-        DspComplex(-18027.S(n.W),   2966.S(n.W)),
-        DspComplex( -2966.S(n.W), -32632.S(n.W)),
-        DspComplex(     0.S(n.W), -20994.S(n.W)),
-        DspComplex( -2966.S(n.W), -32632.S(n.W)),
-        DspComplex(-18027.S(n.W),   2966.S(n.W)),
-        DspComplex(   456.S(n.W),  30122.S(n.W)),
-        DspComplex( 10497.S(n.W), -10497.S(n.W)),
-        DspComplex(-30122.S(n.W),   -456.S(n.W)),
-        DspComplex( -2966.S(n.W),  18027.S(n.W)),
-        DspComplex( 32632.S(n.W),   2966.S(n.W)),
-        DspComplex( 20994.S(n.W),      0.S(n.W)),
-        DspComplex( 32632.S(n.W),   2966.S(n.W)),
-        DspComplex( -2966.S(n.W),  18027.S(n.W)),
-        DspComplex(-30122.S(n.W),   -456.S(n.W)),
-        DspComplex( 10497.S(n.W), -10497.S(n.W)),
-        DspComplex(   456.S(n.W),  30122.S(n.W)),
-        DspComplex(-18027.S(n.W),   2966.S(n.W)),
-        DspComplex( -2966.S(n.W), -32632.S(n.W)),
-        DspComplex(     0.S(n.W), -20994.S(n.W)),
-        DspComplex( -2966.S(n.W), -32632.S(n.W)),
-        DspComplex(-18027.S(n.W),   2966.S(n.W)),
-        DspComplex(   456.S(n.W),  30122.S(n.W)),
-        DspComplex( 10497.S(n.W), -10497.S(n.W)),
-        DspComplex(-30122.S(n.W),   -456.S(n.W)),
-        DspComplex( -2966.S(n.W),  18027.S(n.W)),
-        DspComplex( 32632.S(n.W),   2966.S(n.W)),
-        DspComplex( 20994.S(n.W),      0.S(n.W)),
-        DspComplex( 32632.S(n.W),   2966.S(n.W)),
-        DspComplex( -2966.S(n.W),  18027.S(n.W)),
-        DspComplex(-30122.S(n.W),   -456.S(n.W)),
-        DspComplex( 10497.S(n.W), -10497.S(n.W)),
-        DspComplex(   456.S(n.W),  30122.S(n.W)),
-        DspComplex(-18027.S(n.W),   2966.S(n.W)),
-        DspComplex( -2966.S(n.W), -32632.S(n.W)),
-        DspComplex(     0.S(n.W), -20994.S(n.W)),
-        DspComplex( -2966.S(n.W), -32632.S(n.W)),
-        DspComplex(-18027.S(n.W),   2966.S(n.W)),
-        DspComplex(   456.S(n.W),  30122.S(n.W)),
-        DspComplex( 10497.S(n.W), -10497.S(n.W)),
-        DspComplex(-30122.S(n.W),   -456.S(n.W)),
-        DspComplex( -2966.S(n.W),  18027.S(n.W)),
-        DspComplex( 32632.S(n.W),   2966.S(n.W)),
-        DspComplex( 20994.S(n.W),      0.S(n.W)),
-        DspComplex( 32632.S(n.W),   2966.S(n.W)),
-        DspComplex( -2966.S(n.W),  18027.S(n.W)),
-        DspComplex(-30122.S(n.W),   -456.S(n.W)),
-        DspComplex(  5248.S(n.W),  -5248.S(n.W)))
+  val longTrainingField =
+    Seq(Complex(-0.0780,  0.0000),
+        Complex( 0.0120, -0.0980),
+        Complex( 0.0920, -0.1060),
+        Complex(-0.0920, -0.1150),
+        Complex(-0.0030, -0.0540),
+        Complex( 0.0750,  0.0740),
+        Complex(-0.1270,  0.0210),
+        Complex(-0.1220,  0.0170),
+        Complex(-0.0350,  0.1510),
+        Complex(-0.0560,  0.0220),
+        Complex(-0.0600, -0.0810),
+        Complex( 0.0700, -0.0140),
+        Complex( 0.0820, -0.0920),
+        Complex(-0.1310, -0.0650),
+        Complex(-0.0570, -0.0390),
+        Complex( 0.0370, -0.0980))
 
-  val energyDetectorCoeffs =
-    Seq(1.S(resolution.W),
-        1.S(resolution.W),
-        1.S(resolution.W),
-        1.S(resolution.W),
-        1.S(resolution.W),
-        1.S(resolution.W))
+  val longTrainingConj    = longTrainingField.map(c => c.conjugate)
+  val longTrainingCoeffs  = longTrainingConj.map(c => DspComplex.wire(FixedPoint.fromDouble(c.real, n.W, (n-2).BP),
+                                                                      FixedPoint.fromDouble(c.imag, n.W, (n-2).BP)))
 
-  val shortDetectionCoeffs =
-    Seq(0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W),
-        0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W),
-        0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W),
-        0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 1.S(resolution.W),
-        0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W),
-        0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W),
-        0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W),
-        0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 1.S(resolution.W),
-        0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W),
-        0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W),
-        0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W),
-        0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 1.S(resolution.W),
-        0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W),
-        0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W),
-        0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W),
-        0.S(resolution.W), 0.S(resolution.W), 0.S(resolution.W), 1.S(resolution.W))
+  val shortTrainingField =
+    Seq(Complex( 0.0020, -0.1320),
+        Complex(-0.0790, -0.0130),
+        Complex(-0.0130,  0.1430),
+        Complex( 0.0000,  0.0920),
+        Complex(-0.0130,  0.1430),
+        Complex(-0.0790, -0.0130),
+        Complex( 0.0020, -0.1320),
+        Complex( 0.0460,  0.0460),
+        Complex(-0.1320,  0.0020),
+        Complex(-0.0130, -0.0790),
+        Complex( 0.1430, -0.0130),
+        Complex( 0.0920,  0.0000),
+        Complex( 0.1430, -0.0130),
+        Complex(-0.0130, -0.0790),
+        Complex(-0.1320,  0.0020),
+        Complex( 0.0460,  0.0460),
+        Complex( 0.0020, -0.1320),
+        Complex(-0.0790, -0.0130),
+        Complex(-0.0130,  0.1430),
+        Complex( 0.0000,  0.0920),
+        Complex(-0.0130,  0.1430),
+        Complex(-0.0790, -0.0130),
+        Complex( 0.0020, -0.1320),
+        Complex( 0.0460,  0.0460),
+        Complex(-0.1320,  0.0020),
+        Complex(-0.0130, -0.0790),
+        Complex( 0.1430, -0.0130),
+        Complex( 0.0920,  0.0000),
+        Complex( 0.1430, -0.0130),
+        Complex(-0.0130, -0.0790),
+        Complex(-0.1320,  0.0020),
+        Complex( 0.0460,  0.0460),
+        Complex( 0.0020, -0.1320),
+        Complex(-0.0790, -0.0130),
+        Complex(-0.0130,  0.1430),
+        Complex( 0.0000,  0.0920),
+        Complex(-0.0130,  0.1430),
+        Complex(-0.0790, -0.0130),
+        Complex( 0.0020, -0.1320),
+        Complex( 0.0460,  0.0460),
+        Complex(-0.1320,  0.0020),
+        Complex(-0.0130, -0.0790),
+        Complex( 0.1430, -0.0130),
+        Complex( 0.0920,  0.0000),
+        Complex( 0.1430, -0.0130),
+        Complex(-0.0130, -0.0790),
+        Complex(-0.1320,  0.0020),
+        Complex( 0.0460,  0.0460),
+        Complex( 0.0020, -0.1320),
+        Complex(-0.0790, -0.0130),
+        Complex(-0.0130,  0.1430),
+        Complex( 0.0000,  0.0920),
+        Complex(-0.0130,  0.1430),
+        Complex(-0.0790, -0.0130),
+        Complex( 0.0020, -0.1320),
+        Complex( 0.0460,  0.0460),
+        Complex(-0.1320,  0.0020),
+        Complex(-0.0130, -0.0790),
+        Complex( 0.1430, -0.0130),
+        Complex( 0.0920,  0.0000),
+        Complex( 0.1430, -0.0130),
+        Complex(-0.0130, -0.0790),
+        Complex(-0.1320,  0.0020),
+        Complex( 0.0230,  0.0230))
 
-  val inReg = RegInit(DspComplex.wire(0.S(n.W), 0.S(n.W)))
+  val shortTrainingConj   = shortTrainingField.map(c => c.conjugate)
+  val shortTrainingCoeffs = shortTrainingConj.map(c => DspComplex.wire(FixedPoint.fromDouble(c.real, n.W, (n-2).BP),
+                                                                       FixedPoint.fromDouble(c.imag, n.W, (n-2).BP)))
+ 
+  val energyDetectorCoeffs = Seq.fill(6)(1.U(resolution.W))
 
-  inReg := io.iqSamples
+  var shortDetectionTemplate = Seq.fill(64)(0.U(resolution.W))
+  val shortDetectionCoeffs = shortDetectionTemplate.zipWithIndex.foreach({case (_, 15) => 1.U(resolution.W)
+                                                                          case (_, 23) => 1.U(resolution.W)
+	  				                                  case (_, 39) => 1.U(resolution.W)
+				                                          case (_, 63) => 1.U(resolution.W)
+					                                  case (v,  _) => v})
+
+  val inReg = RegInit(0.U.asTypeOf(inRegType))
+
+  inReg := io.iqSamples.asTypeOf(inRegType)
+
+  val filterRegType = DspComplex(FixedPoint(resolution.W, ((resolution/2)-2).BP), FixedPoint(resolution.W, ((resolution/2)-2).BP)).cloneType
 
   // Compute the correlation with the long training field (LTF)
   val longChainTaps     = longTrainingCoeffs.reverse.map(tap => inReg * tap)
-  val longTrainingChain = RegInit(VecInit(Seq.fill(longChainTaps.length + 1)(DspComplex.wire(0.S(resolution.W), 0.S(resolution.W)))))
+  val longTrainingChain = RegInit(VecInit(Seq.fill(longChainTaps.length + 1)(0.U.asTypeOf(filterRegType))))
 
   for ( i <- 0 to longChainTaps.length - 1) {
             if (i == 0) {
-                longTrainingChain(i + 1) := longChainTaps(i)
+	        longTrainingChain(i + 1) := longChainTaps(i)
             } else {
                 longTrainingChain(i + 1) := longTrainingChain(i) + longChainTaps(i)
             }
   }
 
   val longChainOut = longTrainingChain(longChainTaps.length)
+  val longModulus = (longChainOut.real * longChainOut.real) +
+                    (longChainOut.imag * longChainOut.imag)
 
-  val longOutReg = RegInit(0.S(resolution.W))
+  val longOutReg = RegInit(0.U(resolution.W))
 
-  val longModulus = (longChainOut.real * longChainOut.real + longChainOut.imag * longChainOut.imag)
-
-  longOutReg := longModulus
+  longOutReg    := longModulus.asUInt
+  io.longEnergy := longOutReg
 
   // Average the longModulus over six samples to get the energy estimate
   val longEnergyTaps  = energyDetectorCoeffs.reverse.map(tap => longOutReg * tap)
-  val longEnergyChain = RegInit(VecInit(Seq.fill(longEnergyTaps.length + 1)(0.S(resolution.W))))
+  val longEnergyChain = RegInit(VecInit(Seq.fill(longEnergyTaps.length + 1)(0.U(resolution.W))))
 
   for ( i <- 0 to longEnergyTaps.length - 1) {
             if (i == 0) {
@@ -182,12 +182,10 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: SInt] (
   }
 
   val longEnergyOut = longEnergyChain(longEnergyTaps.length)
-  //val longEnergyReg = RegInit(0.S(resolution.W))
-
 
   // Compute the correlation with the short training field
   val shortChainTaps     = shortTrainingCoeffs.reverse.map(tap => inReg * tap)
-  val shortTrainingChain = RegInit(VecInit(Seq.fill(shortChainTaps.length + 1)(DspComplex.wire(0.S(resolution.W), 0.S(resolution.W)))))
+  val shortTrainingChain = RegInit(VecInit(Seq.fill(shortChainTaps.length + 1)(0.U.asTypeOf(filterRegType))))
 
   for ( i <- 0 to shortChainTaps.length - 1) {
             if (i == 0) {
@@ -199,15 +197,17 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: SInt] (
 
   val shortChainOut = shortTrainingChain(shortChainTaps.length)
 
-  val shortOutReg = RegInit(0.S(resolution.W))
+  val shortOutReg = RegInit(0.U(resolution.W))
 
-  val shortModulus = (shortChainOut.real * shortChainOut.real + shortChainOut.imag * shortChainOut.imag)
+  val shortModulus = (shortChainOut.real * shortChainOut.real) +
+                     (shortChainOut.imag * shortChainOut.imag)
 
-  shortOutReg := shortModulus
+  shortOutReg    := shortModulus.asUInt
+  io.shortEnergy := shortOutReg
 
   // Average the shortModulus over six samples to get the energy estimate
   val shortEnergyTaps  = energyDetectorCoeffs.reverse.map(tap => shortOutReg * tap)
-  val shortEnergyChain = RegInit(VecInit(Seq.fill(shortEnergyTaps.length + 1)(0.S(resolution.W))))
+  val shortEnergyChain = RegInit(VecInit(Seq.fill(shortEnergyTaps.length + 1)(0.U(resolution.W))))
 
   for ( i <- 0 to shortEnergyTaps.length - 1) {
             if (i == 0) {
@@ -222,7 +222,7 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: SInt] (
   // Run the detection filter given on p.206 of A. Sibille, C. Oestges and A. Zanello,
   // MIMO: From Theory to Implementation, Burlington, MA: Academic Press, 2011.
   val shortDetectionTaps  = energyDetectorCoeffs.reverse.map(tap => shortEnergyOut * tap)
-  val shortDetectionChain = RegInit(VecInit(Seq.fill(shortDetectionTaps.length + 1)(0.S(resolution.W))))
+  val shortDetectionChain = RegInit(VecInit(Seq.fill(shortDetectionTaps.length + 1)(0.U(resolution.W))))
 
   for ( i <- 0 to shortDetectionTaps.length - 1) {
             if (i == 0) {
@@ -233,7 +233,7 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: SInt] (
   }
 
   val shortDetectionOut = shortDetectionChain(shortDetectionTaps.length)
-  val detectionReg = RegInit(0.S(resolution.W))
+  val detectionReg = RegInit(0.U(resolution.W))
 
   detectionReg  := shortDetectionOut + longEnergyOut
   io.syncMetric := detectionReg
@@ -242,12 +242,12 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: SInt] (
 //This gives you verilog
 object f2_symbol_sync extends App {
     chisel3.Driver.execute(args, () => new f2_symbol_sync(
-        inputProto = DspComplex(SInt(16.W), SInt(16.W)), outputProto = SInt(32.W))
+        inputProto = DspComplex(SInt(16.W), SInt(16.W)), outputProto = UInt(32.W))
     )
 }
 
 //This is a simple unit tester for demonstration purposes
-class unit_tester(c: f2_symbol_sync[DspComplex[SInt], SInt] ) extends DspTester(c) {
+class unit_tester(c: f2_symbol_sync[DspComplex[SInt], UInt] ) extends DspTester(c) {
 //Tests are here
     poke(c.io.iqSamples.real, 5)
     poke(c.io.iqSamples.imag, 102)
@@ -260,7 +260,7 @@ class unit_tester(c: f2_symbol_sync[DspComplex[SInt], SInt] ) extends DspTester(
 //This is the test driver
 object unit_test extends App {
     iotesters.Driver.execute(args, () => new f2_symbol_sync(
-            inputProto = DspComplex(SInt(16.W), SInt(16.W)), outputProto = SInt(32.W)
+            inputProto = DspComplex(SInt(16.W), SInt(16.W)), outputProto = UInt(32.W)
         )
     ){
             c=>new unit_tester(c)
