@@ -40,9 +40,9 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt] (
 
   val inRegType = DspComplex(FixedPoint(n.W, (n-2).BP), FixedPoint(n.W, (n-2).BP)).cloneType
 
-
+  // The Legacy Long Training Field (L-LTF), from IEEE 802.11-2012, Annex L.
   val longTrainingField =
-    Seq(Complex(-0.0780,  0.0000),
+    Seq(Complex(-0.1560,  0.0000),
         Complex( 0.0120, -0.0980),
         Complex( 0.0920, -0.1060),
         Complex(-0.0920, -0.1150),
@@ -63,15 +63,9 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt] (
   val longTrainingCoeffs  = longTrainingConj.map(c => DspComplex.wire(FixedPoint.fromDouble(c.real, n.W, (n-2).BP),
                                                                       FixedPoint.fromDouble(c.imag, n.W, (n-2).BP)))
 
+  // The Legacy Short Training Field (L-STF), from IEEE 801.11-2012 Annex L.
   val shortTrainingField =
-    Seq(Complex( 0.0020, -0.1320),
-        Complex(-0.0790, -0.0130),
-        Complex(-0.0130,  0.1430),
-        Complex( 0.0000,  0.0920),
-        Complex(-0.0130,  0.1430),
-        Complex(-0.0790, -0.0130),
-        Complex( 0.0020, -0.1320),
-        Complex( 0.0460,  0.0460),
+    Seq(Complex( 0.0460,  0.0460),
         Complex(-0.1320,  0.0020),
         Complex(-0.0130, -0.0790),
         Complex( 0.1430, -0.0130),
@@ -127,28 +121,39 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt] (
         Complex( 0.1430, -0.0130),
         Complex(-0.0130, -0.0790),
         Complex(-0.1320,  0.0020),
-        Complex( 0.0230,  0.0230))
+        Complex( 0.0460,  0.0460),
+        Complex( 0.0020, -0.1320),
+        Complex(-0.0790, -0.0130),
+        Complex(-0.0130,  0.1430),
+        Complex( 0.0000,  0.0920),
+        Complex(-0.0130,  0.1430),
+        Complex(-0.0790, -0.0130),
+        Complex( 0.0020, -0.1320))
 
   val shortTrainingConj   = shortTrainingField.map(c => c.conjugate)
   val shortTrainingCoeffs = shortTrainingConj.map(c => DspComplex.wire(FixedPoint.fromDouble(c.real, n.W, (n-2).BP),
                                                                        FixedPoint.fromDouble(c.imag, n.W, (n-2).BP)))
  
+  // Six sample boxcar filter for energy detection
   val energyDetectorCoeffs = Seq.fill(6)(1.U(resolution.W))
 
+  // A four tap filter to detect peaks in the L-STF matched filter
   var shortDetectionTemplate = Seq.fill(64)(0.U(resolution.W))
-  val shortDetectionCoeffs = shortDetectionTemplate.zipWithIndex.foreach({case (_, 15) => 1.U(resolution.W)
+  val shortDetectionCoeffs = shortDetectionTemplate.reverse.zipWithIndex.foreach({case (_, 15) => 1.U(resolution.W)
                                                                           case (_, 23) => 1.U(resolution.W)
 	  				                                  case (_, 39) => 1.U(resolution.W)
 				                                          case (_, 63) => 1.U(resolution.W)
 					                                  case (v,  _) => v})
-
+  // The input, a DspComplex of SInts, stored in a register
+  // and cast to a DspComplex of FixedPoints.
   val inReg = RegInit(0.U.asTypeOf(inRegType))
 
   inReg := io.iqSamples.asTypeOf(inRegType)
 
-  val filterRegType = DspComplex(FixedPoint(resolution.W, ((resolution/2)-2).BP), FixedPoint(resolution.W, ((resolution/2)-2).BP)).cloneType
+  val filterRegType = DspComplex(FixedPoint(resolution.W, ((resolution/2)-2).BP),
+                                 FixedPoint(resolution.W, ((resolution/2)-2).BP)).cloneType
 
-  // Compute the correlation with the long training field (LTF)
+  // Compute the correlation with the long training field (L-LTF)
   val longChainTaps     = longTrainingCoeffs.reverse.map(tap => inReg * tap)
   val longTrainingChain = RegInit(VecInit(Seq.fill(longChainTaps.length + 1)(0.U.asTypeOf(filterRegType))))
 
@@ -161,16 +166,15 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt] (
   }
 
   val longChainOut = longTrainingChain(longChainTaps.length)
-  val longModulus = (longChainOut.real * longChainOut.real) +
-                    (longChainOut.imag * longChainOut.imag)
+  val longModulus  = (longChainOut.real * longChainOut.real) +
+                     (longChainOut.imag * longChainOut.imag)
 
-  val longOutReg = RegInit(0.U(resolution.W))
-
-  longOutReg    := longModulus.asUInt
-  io.longEnergy := longOutReg
+  val longModulusReg = RegInit(0.U(resolution.W))
+  longModulusReg     := longModulus.asUInt << 4		// Shift four to compensate for energy
+                                                        // difference in the short and long filters
 
   // Average the longModulus over six samples to get the energy estimate
-  val longEnergyTaps  = energyDetectorCoeffs.reverse.map(tap => longOutReg * tap)
+  val longEnergyTaps  = energyDetectorCoeffs.reverse.map(tap => longModulusReg * tap)
   val longEnergyChain = RegInit(VecInit(Seq.fill(longEnergyTaps.length + 1)(0.U(resolution.W))))
 
   for ( i <- 0 to longEnergyTaps.length - 1) {
@@ -182,6 +186,9 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt] (
   }
 
   val longEnergyOut = longEnergyChain(longEnergyTaps.length)
+  val longEnergyReg = RegInit(0.U(resolution.W))
+  longEnergyReg := longEnergyOut
+  io.longEnergy := longEnergyReg
 
   // Compute the correlation with the short training field
   val shortChainTaps     = shortTrainingCoeffs.reverse.map(tap => inReg * tap)
@@ -202,11 +209,11 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt] (
   val shortModulus = (shortChainOut.real * shortChainOut.real) +
                      (shortChainOut.imag * shortChainOut.imag)
 
-  shortOutReg    := shortModulus.asUInt
-  io.shortEnergy := shortOutReg
-
+  val shortModulusReg = RegInit(0.U(resolution.W))
+  shortModulusReg := shortModulus.asUInt
+  
   // Average the shortModulus over six samples to get the energy estimate
-  val shortEnergyTaps  = energyDetectorCoeffs.reverse.map(tap => shortOutReg * tap)
+  val shortEnergyTaps  = energyDetectorCoeffs.reverse.map(tap => shortModulusReg * tap)
   val shortEnergyChain = RegInit(VecInit(Seq.fill(shortEnergyTaps.length + 1)(0.U(resolution.W))))
 
   for ( i <- 0 to shortEnergyTaps.length - 1) {
@@ -218,6 +225,9 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt] (
   }
 
   val shortEnergyOut = shortEnergyChain(shortEnergyTaps.length)
+  val shortEnergyReg = RegInit(0.U(resolution.W))
+  shortEnergyReg := shortEnergyOut
+  io.shortEnergy := shortEnergyReg
 
   // Run the detection filter given on p.206 of A. Sibille, C. Oestges and A. Zanello,
   // MIMO: From Theory to Implementation, Burlington, MA: Academic Press, 2011.
