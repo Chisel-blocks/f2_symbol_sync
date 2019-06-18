@@ -249,9 +249,10 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt] (
   io.shortEnergy := shortDetectionReg
 
   val detectionReg = RegInit(0.U(resolution.W))
-  val relativeDelay = 34  // relative delay of the short versus long energy signals.
-  val delayedShortEnergy = ShiftRegister(shortDetectionOut, relativeDelay)
-  detectionReg  := delayedShortEnergy + longEnergyOut
+  val relativeDelay = 36  // relative delay of the filtered
+                          // short versus long energy signals.
+
+  detectionReg  := ShiftRegister(shortDetectionOut, relativeDelay) + longEnergyOut
   io.syncMetric := detectionReg
 }
 
