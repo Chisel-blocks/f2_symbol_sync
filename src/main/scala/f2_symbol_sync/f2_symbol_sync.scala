@@ -25,9 +25,8 @@ class f2_symbol_sync_io[T <: DspComplex[SInt], U <: UInt](inputProto: T, outputP
    extends Bundle {
         val iqSamples   = Input(inputProto.cloneType)
         val syncMetric  = Output(outputProto.cloneType)
-        val longEnergy  = Output(outputProto.cloneType)
-        val shortEnergy = Output(outputProto.cloneType)
-        override def cloneType = (new f2_symbol_sync_io(inputProto.cloneType, outputProto.cloneType)).asInstanceOf[this.type]
+        override def cloneType = (new f2_symbol_sync_io(inputProto.cloneType,
+                                                        outputProto.cloneType)).asInstanceOf[this.type]
    }
 
 class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt] (
@@ -187,9 +186,6 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt] (
   }
 
   val longEnergyOut = longEnergyChain(longEnergyTaps.length)
-  val longEnergyReg = RegInit(0.U(resolution.W))
-  longEnergyReg := longEnergyOut
-  io.longEnergy := longEnergyReg
 
   // Compute the correlation with the short training field
   val shortChainTaps     = shortTrainingCoeffs.reverse.map(tap => inReg * tap)
@@ -243,10 +239,6 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt] (
   // The output of the short training detection chain is divided by 4 to normalize
   // its energy
   val shortDetectionOut = shortDetectionChain(shortDetectionTaps.length) >> 2
-
-  val shortDetectionReg = RegInit(0.U(resolution.W))
-  shortDetectionReg := shortDetectionOut
-  io.shortEnergy := shortDetectionReg
 
   val detectionReg = RegInit(0.U(resolution.W))
   val relativeDelay = 36  // relative delay of the filtered
