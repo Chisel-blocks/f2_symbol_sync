@@ -16,6 +16,7 @@ package f2_symbol_sync
 
 import chisel3.experimental._
 import chisel3._
+import chisel3.util._
 import dsptools.{DspTester, DspTesterOptionsManager, DspTesterOptions}
 import dsptools.numbers._
 import breeze.math.Complex
@@ -225,9 +226,6 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt] (
   }
 
   val shortEnergyOut = shortEnergyChain(shortEnergyTaps.length)
-  val shortEnergyReg = RegInit(0.U(resolution.W))
-  shortEnergyReg := shortEnergyOut
-  io.shortEnergy := shortEnergyReg
 
   // Run the detection filter given on p.206 of A. Sibille, C. Oestges and A. Zanello,
   // MIMO: From Theory to Implementation, Burlington, MA: Academic Press, 2011.
@@ -242,10 +240,18 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt] (
             }
   }
 
-  val shortDetectionOut = shortDetectionChain(shortDetectionTaps.length)
-  val detectionReg = RegInit(0.U(resolution.W))
+  // The output of the short training detection chain is divided by 4 to normalize
+  // its energy
+  val shortDetectionOut = shortDetectionChain(shortDetectionTaps.length) >> 2
 
-  detectionReg  := shortDetectionOut + longEnergyOut
+  val shortDetectionReg = RegInit(0.U(resolution.W))
+  shortDetectionReg := shortDetectionOut
+  io.shortEnergy := shortDetectionReg
+
+  val detectionReg = RegInit(0.U(resolution.W))
+  val relativeDelay = 18  // relative delay of the short versus long energy signals.
+  val delayedShortEnergy = ShiftRegister(shortDetectionOut, relativeDelay)
+  detectionReg  := delayedShortEnergy + longEnergyOut
   io.syncMetric := detectionReg
 }
 
