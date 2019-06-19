@@ -21,22 +21,26 @@ import dsptools.{DspTester, DspTesterOptionsManager, DspTesterOptions}
 import dsptools.numbers._
 import breeze.math.Complex
 
-class f2_symbol_sync_io[T <: DspComplex[SInt], U <: UInt](inputProto: T, outputProto: U)
+class f2_symbol_sync_io[T <: DspComplex[SInt], U <: UInt, V <: Bits](inputProto: T, outputProto1: U, outputProto2: V)
    extends Bundle {
         val iqSamples   = Input(inputProto.cloneType)
-        val syncMetric  = Output(outputProto.cloneType)
+        val syncMetric  = Output(outputProto1.cloneType)
+        val syncFound   = Output(outputProto2.cloneType)
         override def cloneType = (new f2_symbol_sync_io(inputProto.cloneType,
-                                                        outputProto.cloneType)).asInstanceOf[this.type]
+                                                        outputProto1.cloneType,
+							outputProto2.cloneType)).asInstanceOf[this.type]
    }
 
-class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt] (
-  inputProto:  T,
-  outputProto: U,
+class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: UInt] (
+  inputProto:   T,
+  outputProto1: U,
+  outputProto2: V,
   n:          Int = 16,
   resolution: Int = 32
 ) extends Module {
-  val io = IO(new f2_symbol_sync_io(inputProto  = DspComplex(SInt(n.W), SInt(n.W)),
-                                    outputProto = UInt(resolution.W)))
+  val io = IO(new f2_symbol_sync_io(inputProto   = DspComplex(SInt(n.W), SInt(n.W)),
+                                    outputProto1 = UInt(resolution.W),
+   				    outputProto2 = Bool()))
 
   val inRegType = DspComplex(FixedPoint(n.W, (n-2).BP), FixedPoint(n.W, (n-2).BP)).cloneType
 
@@ -246,30 +250,37 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt] (
 
   detectionReg  := ShiftRegister(shortDetectionOut, relativeDelay) + longEnergyOut
   io.syncMetric := detectionReg
+
+
+  // At this point we have the syncMetric.  Now, it is necessary to detect the magnitude of the peak
+  // in a window of 16 samples.  The peak value is saved and compared to the last peak.  If the
+  // current peak is less than 85 percent as high as the previous, sync is found and  I set
+  // the syncFound signal.
+
+  val syncFlag = RegInit(false.B)
+  io.syncFound := syncFlag
 }
 
 //This gives you verilog
 object f2_symbol_sync extends App {
     chisel3.Driver.execute(args, () => new f2_symbol_sync(
-        inputProto = DspComplex(SInt(16.W), SInt(16.W)), outputProto = UInt(32.W))
+        inputProto = DspComplex(SInt(16.W), SInt(16.W)), outputProto1 = UInt(32.W), outputProto2 = Bool())
     )
 }
 
 //This is a simple unit tester for demonstration purposes
-class unit_tester(c: f2_symbol_sync[DspComplex[SInt], UInt] ) extends DspTester(c) {
+class unit_tester(c: f2_symbol_sync[DspComplex[SInt], UInt, Bool] ) extends DspTester(c) {
 //Tests are here
     poke(c.io.iqSamples.real, 5)
     poke(c.io.iqSamples.imag, 102)
     step(5)
-    fixTolLSBs.withValue(1) {
-        expect(c.io.syncMetric, 5)
-    }
+    expect(c.io.syncFound, false)
 }
 
 //This is the test driver
 object unit_test extends App {
     iotesters.Driver.execute(args, () => new f2_symbol_sync(
-            inputProto = DspComplex(SInt(16.W), SInt(16.W)), outputProto = UInt(32.W)
+            inputProto = DspComplex(SInt(16.W), SInt(16.W)), outputProto1 = UInt(32.W), outputProto2 = Bool()
         )
     ){
             c=>new unit_tester(c)
