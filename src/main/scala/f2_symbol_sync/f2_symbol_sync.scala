@@ -306,10 +306,15 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
   // to zero.  The variable delay remains zero as long as passThru
   // is asserted.
   //
+  val passThruReg = RegInit(false.B)
+
   edgeDetector.io.A := io.syncSearch
-  when (edgeDetector.io.rising & ! io.passThru) {
+  passThruReg       := io.passThru
+  when (edgeDetector.io.rising && (! passThruReg)) {
        syncFlagInhibit := false.B
-  }  
+  } .elsewhen (passThruReg) {
+       syncFlagInhibit := true.B
+  }
 
   // state machine goes here
 
@@ -319,7 +324,7 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
 
       when ((! syncFlagInhibit) &&
             (peakFactor * previousPeakVal.asTypeOf(peakFactorType) > currentPeakVal.asTypeOf(peakFactorType))) {
-    	   syncFlag          := true.B & ! io.passThru  // If io.passThru is asserted, mask off syncFlag
+    	   syncFlag          := true.B
            syncFlagInhibit   := true.B
 	   detectedPeakIndex := previousPeakIndex
        }
@@ -328,14 +333,14 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
       currentPeakIndex  := 0.U
       windowCounter     := windowCounter + 1.U
 
-    } otherwise {
+  } .otherwise {
       syncFlag := false.B
       when (detectionReg > currentPeakVal) {
       	   currentPeakVal   := detectionReg
       	   currentPeakIndex := windowCounter
     	   }
       windowCounter := windowCounter + 1.U
-    }
+  }
   
   // Here the syncFound pulse is aligned with the output IQ samples.
   //
@@ -368,7 +373,7 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
   variableDelay.io.iptr_A := ShiftRegister(inReg.asTypeOf(sampleType), constantDelayClocks)
   when (io.passThru) {
        variableDelay.io.select := 0.U
-  } otherwise {
+  } .otherwise {
     	variableDelay.io.select := maximumVariableDelayClocks - detectedPeakIndex
   }
   io.iqSyncedSamples      := variableDelay.io.optr_Z
