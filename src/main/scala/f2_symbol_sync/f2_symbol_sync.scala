@@ -294,7 +294,7 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: UInt] (
   val peakFactorType = FixedPoint(resolution.W, (resolution-2).BP).cloneType
   val peakFactor = FixedPoint.fromDouble(0.85, resolution.W, (resolution-2).BP)
 
-  val savedIndex      = RegInit(0.U(windowCounterLength.W))
+  val detectedPeakIndex = RegInit(0.U(windowCounterLength.W))
 
   // state machine goes here
 
@@ -304,9 +304,9 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: UInt] (
 
     when ((! syncFlagInhibit) &&
           (peakFactor * previousPeakVal.asTypeOf(peakFactorType) > currentPeakVal.asTypeOf(peakFactorType))) {
-    	 syncFlag        := true.B
-         syncFlagInhibit := true.B
-	 savedIndex      := previousPeakIndex
+    	 syncFlag          := true.B
+         syncFlagInhibit   := true.B
+	 detectedPeakIndex := previousPeakIndex
      }
 
     currentPeakVal    := detectionReg
@@ -338,7 +338,7 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: UInt] (
   // detection window will not change while any part of the L-LTF
   // is passing through the variable delay.
   //
-  val windowPadClocks = 10
+  val windowPadClocks = 16
   io.syncFound := ShiftRegister(syncFlag, windowPadClocks)
   
   // The delay is made two parts, a constant delay implemented
@@ -360,7 +360,7 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: UInt] (
   val constantDelayClocks = desiredDelayClocks + windowPadClocks - variableDelayOverheadClocks - maximumVariableDelayClocks
 
   variableDelay.io.iptr_A := ShiftRegister(inReg.asTypeOf(sampleType), constantDelayClocks)
-  variableDelay.io.select := maximumVariableDelayClocks - previousPeakIndex
+  variableDelay.io.select := maximumVariableDelayClocks - detectedPeakIndex
   io.iqSyncedSamples      := variableDelay.io.optr_Z
 }
 
