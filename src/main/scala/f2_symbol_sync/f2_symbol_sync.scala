@@ -58,7 +58,7 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: UInt] (
 				    debugProto1  = UInt(resolution.W),
 				    debugProto2  = UInt(4.W)))
 
-  val variableDelay = Module(new prog_delay(proto = DspComplex(SInt(n.W), SInt(n.W)), maxdelay = 56))
+  val variableDelay = Module(new prog_delay(proto = DspComplex(SInt(n.W), SInt(n.W)), maxdelay = 64))
 
   val sampleType = DspComplex(SInt(n.W), SInt(n.W))
   val inRegType  = DspComplex(FixedPoint(n.W, (n-2).BP), FixedPoint(n.W, (n-2).BP)).cloneType
@@ -171,6 +171,8 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: UInt] (
   // and cast to a DspComplex of FixedPoints.
   val inReg = RegInit(0.U.asTypeOf(inRegType))
 
+
+  // Hardware starts here with the input register
   inReg := io.iqSamples.asTypeOf(inRegType)
 
   val filterRegType = DspComplex(FixedPoint(resolution.W, ((resolution/2)-2).BP),
@@ -329,13 +331,39 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: UInt] (
       io.currentIndex  := currentPeakIndex
     }
   
-  io.syncFound := syncFlag
+  // Here the syncFound pulse is aligned with the output IQ samples.
+  //
+  // The val 'windowPadClocks' delays both the output samples and
+  // the syncFound pulse, so that the peak index in the sliding
+  // detection window will not change while any part of the L-LTF
+  // is passing through the variable delay.
+  //
+  val windowPadClocks = 10
+  io.syncFound := ShiftRegister(syncFlag, windowPadClocks)
   
-  val constantDelay = 53.U
-  variableDelay.io.iptr_A := inReg.asTypeOf(sampleType)
-  variableDelay.io.select := constantDelay - previousPeakIndex
-  io.iqSyncedSamples := variableDelay.io.optr_Z
+  // The delay is made two parts, a constant delay implemented
+  // by a shift register, and a variable delay implemented by a
+  // prog_delay module.
+  //
+  // The desired delay is 56 clocks minus the previous peak
+  // index, plus the windowPad value. The prog_delay block
+  // has a 3 clock overhead.
+  //
+  // The prog_delay block has a 4 bit input, giving a delay of
+  // 0 to 15 clocks (plus overhead).
+  //
+  //
+  val desiredDelayClocks          = 56
+  val variableDelayOverheadClocks = 3
+  val maximumVariableDelayClocks  = 15
+
+  val constantDelayClocks = desiredDelayClocks + windowPadClocks - variableDelayOverheadClocks - maximumVariableDelayClocks
+
+  variableDelay.io.iptr_A := ShiftRegister(inReg.asTypeOf(sampleType), constantDelayClocks)
+  variableDelay.io.select := maximumVariableDelayClocks - previousPeakIndex
+  io.iqSyncedSamples      := variableDelay.io.optr_Z
 }
+
 
 //This gives you verilog
 object f2_symbol_sync extends App {
