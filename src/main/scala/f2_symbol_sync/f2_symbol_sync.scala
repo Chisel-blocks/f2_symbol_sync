@@ -20,45 +20,41 @@ import chisel3.util._
 import dsptools.{DspTester, DspTesterOptionsManager, DspTesterOptions}
 import dsptools.numbers._
 import breeze.math.Complex
+import edge_detector._
 import prog_delay._
 
 class f2_symbol_sync_io[T <: DspComplex[SInt], U <: UInt, V <: Bits](samplesProto: T,
+      			     		       	    	             controlProto: V,
                                                                      outputProto1: U,
-                                                                     outputProto2: V,
-                                                                     debugProto1:  U,
-								     debugProto2:  U)
+                                                                     outputProto2: V)
    extends Bundle {
         val iqSamples       = Input(samplesProto.cloneType)
+	val syncSearch	    = Input(controlProto.cloneType)
+	val passThru        = Input(controlProto.cloneType)
         val iqSyncedSamples = Output(samplesProto.cloneType)
         val syncMetric      = Output(outputProto1.cloneType)
         val syncFound       = Output(outputProto2.cloneType)
-        val currentPeak     = Output(debugProto1.cloneType)
-	val previousPeak    = Output(debugProto1.cloneType)
-        val currentIndex    = Output(debugProto2.cloneType)
-	val previousIndex   = Output(debugProto2.cloneType)
         override def cloneType = (new f2_symbol_sync_io(samplesProto.cloneType,
+                                                        controlProto.cloneType,
                                                         outputProto1.cloneType,
-							outputProto2.cloneType,
-							debugProto1.cloneType,
-							debugProto2.cloneType)).asInstanceOf[this.type]
+							outputProto2.cloneType)).asInstanceOf[this.type]
    }
 
-class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: UInt] (
+class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
   samplesProto: T,
+  controlProto: V,
   outputProto1: U,
   outputProto2: V,
-  debugProto1:  U,
-  debugProto2:  U,
   n:          Int = 16,
   resolution: Int = 32
 ) extends Module {
   val io = IO(new f2_symbol_sync_io(samplesProto = DspComplex(SInt(n.W), SInt(n.W)),
+      	   	  		    controlProto = Bool(),
                                     outputProto1 = UInt(resolution.W),
-   				    outputProto2 = Bool(),
-				    debugProto1  = UInt(resolution.W),
-				    debugProto2  = UInt(4.W)))
+   				    outputProto2 = Bool()))
 
   val variableDelay = Module(new prog_delay(proto = DspComplex(SInt(n.W), SInt(n.W)), maxdelay = 64))
+  val edgeDetector  = Module(new edge_detector())
 
   val sampleType = DspComplex(SInt(n.W), SInt(n.W))
   val inRegType  = DspComplex(FixedPoint(n.W, (n-2).BP), FixedPoint(n.W, (n-2).BP)).cloneType
@@ -272,14 +268,15 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: UInt] (
   detectionReg  := ShiftRegister(shortDetectionOut, relativeDelay) + longEnergyOut
   io.syncMetric := detectionReg
 
-
+  //
   // At this point we have the syncMetric.  Now, it is necessary to detect the magnitude of the peak
   // in a window of 16 samples.  The peak value is saved and compared to the last peak.  If the
   // current peak is less than 85 percent as high as the previous, sync is found and  I set
   // the syncFound signal.
+  //
 
   val syncFlag        = RegInit(false.B)
-  val syncFlagInhibit = RegInit(false.B)
+  val syncFlagInhibit = RegInit(true.B)
 
   val windowLength = 16
   val windowCounterLength = log2Ceil(windowLength)
@@ -296,27 +293,41 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: UInt] (
 
   val detectedPeakIndex = RegInit(0.U(windowCounterLength.W))
 
+  //
+  // Control interface
+  //
+  // The module initializes into the "inhibited" state, with the
+  // matched filters running but never emitting a "foundSync" pulse.
+  // When the "io.syncSearch" signal is asserted, it is synchronized
+  // with the clock and "syncFlagInhibit"is set to false.
+  //
+  // Asserting the "io.passThru" signal overrides io.syncSearch.  It also
+  // sets the variable delay that adjusts the output data alignment
+  // to zero.  The variable delay remains zero as long as passThru
+  // is asserted.
+  //
+  edgeDetector.io.A := io.syncSearch
+  when (edgeDetector.io.rising & ! io.passThru) {
+       syncFlagInhibit := false.B
+  }  
+
   // state machine goes here
 
   when (windowCounter === 0.U) {
-    previousPeakVal   := currentPeakVal
-    previousPeakIndex := currentPeakIndex
+      previousPeakVal   := currentPeakVal
+      previousPeakIndex := currentPeakIndex
 
-    when ((! syncFlagInhibit) &&
-          (peakFactor * previousPeakVal.asTypeOf(peakFactorType) > currentPeakVal.asTypeOf(peakFactorType))) {
-    	 syncFlag          := true.B
-         syncFlagInhibit   := true.B
-	 detectedPeakIndex := previousPeakIndex
-     }
+      when ((! syncFlagInhibit) &&
+            (peakFactor * previousPeakVal.asTypeOf(peakFactorType) > currentPeakVal.asTypeOf(peakFactorType))) {
+    	   syncFlag          := true.B & ! io.passThru  // If io.passThru is asserted, mask off syncFlag
+           syncFlagInhibit   := true.B
+	   detectedPeakIndex := previousPeakIndex
+       }
 
-    currentPeakVal    := detectionReg
-    currentPeakIndex  := 0.U
-    windowCounter     := windowCounter + 1.U
+      currentPeakVal    := detectionReg
+      currentPeakIndex  := 0.U
+      windowCounter     := windowCounter + 1.U
 
-    io.previousPeak  := previousPeakVal
-    io.previousIndex := previousPeakIndex
-    io.currentPeak   := currentPeakVal
-    io.currentIndex  := currentPeakIndex
     } otherwise {
       syncFlag := false.B
       when (detectionReg > currentPeakVal) {
@@ -324,11 +335,6 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: UInt] (
       	   currentPeakIndex := windowCounter
     	   }
       windowCounter := windowCounter + 1.U
-
-      io.previousPeak  := previousPeakVal
-      io.previousIndex := previousPeakIndex
-      io.currentPeak   := currentPeakVal
-      io.currentIndex  := currentPeakIndex
     }
   
   // Here the syncFound pulse is aligned with the output IQ samples.
@@ -338,7 +344,7 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: UInt] (
   // detection window will not change while any part of the L-LTF
   // is passing through the variable delay.
   //
-  val windowPadClocks = 16
+  val windowPadClocks = windowLength
   io.syncFound := ShiftRegister(syncFlag, windowPadClocks)
   
   // The delay is made two parts, a constant delay implemented
@@ -360,7 +366,11 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: UInt] (
   val constantDelayClocks = desiredDelayClocks + windowPadClocks - variableDelayOverheadClocks - maximumVariableDelayClocks
 
   variableDelay.io.iptr_A := ShiftRegister(inReg.asTypeOf(sampleType), constantDelayClocks)
-  variableDelay.io.select := maximumVariableDelayClocks - detectedPeakIndex
+  when (io.passThru) {
+       variableDelay.io.select := 0.U
+  } otherwise {
+    	variableDelay.io.select := maximumVariableDelayClocks - detectedPeakIndex
+  }
   io.iqSyncedSamples      := variableDelay.io.optr_Z
 }
 
@@ -369,10 +379,9 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: UInt] (
 object f2_symbol_sync extends App {
     chisel3.Driver.execute(args, () => new f2_symbol_sync(
         samplesProto = DspComplex(SInt(16.W), SInt(16.W)),
+	controlProto = Bool(),
 	outputProto1 = UInt(32.W),
-	outputProto2 = Bool(),
-	debugProto1 = UInt(32.W),
-	debugProto2 = UInt(4.W))
+	outputProto2 = Bool())
     )
 }
 
@@ -389,10 +398,9 @@ class unit_tester(c: f2_symbol_sync[DspComplex[SInt], UInt, Bool] ) extends DspT
 object unit_test extends App {
     iotesters.Driver.execute(args, () => new f2_symbol_sync(
             samplesProto = DspComplex(SInt(16.W), SInt(16.W)),
+	    controlProto = Bool(),
 	    outputProto1 = UInt(32.W),
-	    outputProto2 = Bool(),
-	    debugProto1 = UInt(32.W),
-	    debugProto2 = UInt(4.W)
+	    outputProto2 = Bool()
         )
     ){
             c=>new unit_tester(c)

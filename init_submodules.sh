@@ -26,6 +26,7 @@ git submodule update --init
 Recursively init submodules
 SUBMODULES="\
     prog_delay \
+    edge_detector \
     "
 for module in $SUBMODULES; do
     cd ${DIR}/${module}
