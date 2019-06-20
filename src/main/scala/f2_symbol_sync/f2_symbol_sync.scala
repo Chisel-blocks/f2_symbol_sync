@@ -20,29 +20,48 @@ import chisel3.util._
 import dsptools.{DspTester, DspTesterOptionsManager, DspTesterOptions}
 import dsptools.numbers._
 import breeze.math.Complex
+import prog_delay._
 
-class f2_symbol_sync_io[T <: DspComplex[SInt], U <: UInt, V <: Bits](inputProto: T, outputProto1: U, outputProto2: V)
+class f2_symbol_sync_io[T <: DspComplex[SInt], U <: UInt, V <: Bits](samplesProto: T,
+                                                                     outputProto1: U,
+                                                                     outputProto2: V,
+                                                                     debugProto1:  U,
+								     debugProto2:  U)
    extends Bundle {
-        val iqSamples   = Input(inputProto.cloneType)
-        val syncMetric  = Output(outputProto1.cloneType)
-        val syncFound   = Output(outputProto2.cloneType)
-        override def cloneType = (new f2_symbol_sync_io(inputProto.cloneType,
+        val iqSamples       = Input(samplesProto.cloneType)
+        val iqSyncedSamples = Output(samplesProto.cloneType)
+        val syncMetric      = Output(outputProto1.cloneType)
+        val syncFound       = Output(outputProto2.cloneType)
+        val currentPeak     = Output(debugProto1.cloneType)
+	val previousPeak    = Output(debugProto1.cloneType)
+        val currentIndex    = Output(debugProto2.cloneType)
+	val previousIndex   = Output(debugProto2.cloneType)
+        override def cloneType = (new f2_symbol_sync_io(samplesProto.cloneType,
                                                         outputProto1.cloneType,
-							outputProto2.cloneType)).asInstanceOf[this.type]
+							outputProto2.cloneType,
+							debugProto1.cloneType,
+							debugProto2.cloneType)).asInstanceOf[this.type]
    }
 
 class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: UInt] (
-  inputProto:   T,
+  samplesProto: T,
   outputProto1: U,
   outputProto2: V,
+  debugProto1:  U,
+  debugProto2:  U,
   n:          Int = 16,
   resolution: Int = 32
 ) extends Module {
-  val io = IO(new f2_symbol_sync_io(inputProto   = DspComplex(SInt(n.W), SInt(n.W)),
+  val io = IO(new f2_symbol_sync_io(samplesProto = DspComplex(SInt(n.W), SInt(n.W)),
                                     outputProto1 = UInt(resolution.W),
-   				    outputProto2 = Bool()))
+   				    outputProto2 = Bool(),
+				    debugProto1  = UInt(resolution.W),
+				    debugProto2  = UInt(4.W)))
 
-  val inRegType = DspComplex(FixedPoint(n.W, (n-2).BP), FixedPoint(n.W, (n-2).BP)).cloneType
+  val variableDelay = Module(new prog_delay(proto = DspComplex(SInt(n.W), SInt(n.W)), maxdelay = 56))
+
+  val sampleType = DspComplex(SInt(n.W), SInt(n.W))
+  val inRegType  = DspComplex(FixedPoint(n.W, (n-2).BP), FixedPoint(n.W, (n-2).BP)).cloneType
 
   // The Legacy Long Training Field (L-LTF), from IEEE 802.11-2012, Annex L.
   val longTrainingField =
@@ -257,14 +276,75 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: UInt] (
   // current peak is less than 85 percent as high as the previous, sync is found and  I set
   // the syncFound signal.
 
-  val syncFlag = RegInit(false.B)
+  val syncFlag        = RegInit(false.B)
+  val syncFlagInhibit = RegInit(false.B)
+
+  val windowLength = 16
+  val windowCounterLength = log2Ceil(windowLength)
+ 
+  val previousPeakVal = RegInit(0.U(resolution.W))
+  val currentPeakVal  = RegInit(0.U(resolution.W))
+
+  val windowCounter     = RegInit(0.U(windowCounterLength.W))
+  val previousPeakIndex = RegInit(0.U(windowCounterLength.W))
+  val currentPeakIndex  = RegInit(0.U(windowCounterLength.W))
+
+  val peakFactorType = FixedPoint(resolution.W, (resolution-2).BP).cloneType
+  val peakFactor = FixedPoint.fromDouble(0.85, resolution.W, (resolution-2).BP)
+
+  val savedIndex      = RegInit(0.U(windowCounterLength.W))
+
+  // state machine goes here
+
+  when (windowCounter === 0.U) {
+    previousPeakVal   := currentPeakVal
+    previousPeakIndex := currentPeakIndex
+
+    when ((! syncFlagInhibit) &&
+          (peakFactor * previousPeakVal.asTypeOf(peakFactorType) > currentPeakVal.asTypeOf(peakFactorType))) {
+    	 syncFlag        := true.B
+         syncFlagInhibit := true.B
+	 savedIndex      := previousPeakIndex
+     }
+
+    currentPeakVal    := detectionReg
+    currentPeakIndex  := 0.U
+    windowCounter     := windowCounter + 1.U
+
+    io.previousPeak  := previousPeakVal
+    io.previousIndex := previousPeakIndex
+    io.currentPeak   := currentPeakVal
+    io.currentIndex  := currentPeakIndex
+    } otherwise {
+      syncFlag := false.B
+      when (detectionReg > currentPeakVal) {
+      	   currentPeakVal   := detectionReg
+      	   currentPeakIndex := windowCounter
+    	   }
+      windowCounter := windowCounter + 1.U
+
+      io.previousPeak  := previousPeakVal
+      io.previousIndex := previousPeakIndex
+      io.currentPeak   := currentPeakVal
+      io.currentIndex  := currentPeakIndex
+    }
+  
   io.syncFound := syncFlag
+  
+  val constantDelay = 53.U
+  variableDelay.io.iptr_A := inReg.asTypeOf(sampleType)
+  variableDelay.io.select := constantDelay - previousPeakIndex
+  io.iqSyncedSamples := variableDelay.io.optr_Z
 }
 
 //This gives you verilog
 object f2_symbol_sync extends App {
     chisel3.Driver.execute(args, () => new f2_symbol_sync(
-        inputProto = DspComplex(SInt(16.W), SInt(16.W)), outputProto1 = UInt(32.W), outputProto2 = Bool())
+        samplesProto = DspComplex(SInt(16.W), SInt(16.W)),
+	outputProto1 = UInt(32.W),
+	outputProto2 = Bool(),
+	debugProto1 = UInt(32.W),
+	debugProto2 = UInt(4.W))
     )
 }
 
@@ -280,7 +360,11 @@ class unit_tester(c: f2_symbol_sync[DspComplex[SInt], UInt, Bool] ) extends DspT
 //This is the test driver
 object unit_test extends App {
     iotesters.Driver.execute(args, () => new f2_symbol_sync(
-            inputProto = DspComplex(SInt(16.W), SInt(16.W)), outputProto1 = UInt(32.W), outputProto2 = Bool()
+            samplesProto = DspComplex(SInt(16.W), SInt(16.W)),
+	    outputProto1 = UInt(32.W),
+	    outputProto2 = Bool(),
+	    debugProto1 = UInt(32.W),
+	    debugProto2 = UInt(4.W)
         )
     ){
             c=>new unit_tester(c)

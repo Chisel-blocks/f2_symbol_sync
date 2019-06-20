@@ -1,0 +1,3 @@
+[submodule "prog_delay"]
+	path = prog_delay
+	url = git@github.com:Chisel-blocks/prog_delay
