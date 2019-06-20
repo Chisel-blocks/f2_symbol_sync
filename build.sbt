@@ -96,4 +96,5 @@ libraryDependencies  ++= Seq(
 
 // Put your git-version controlled snapshots here
 libraryDependencies += "edu.berkeley.cs" %% "prog_delay" % gitSubmoduleHashSnapshotVersion("prog_delay")
+libraryDependencies += "edu.berkeley.cs" %% "edge_detector" % gitSubmoduleHashSnapshotVersion("edge_detector")
 

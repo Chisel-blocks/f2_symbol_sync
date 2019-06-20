@@ -1,3 +1,6 @@
 [submodule "prog_delay"]
 	path = prog_delay
 	url = git@github.com:Chisel-blocks/prog_delay
+[submodule "edge_detector"]
+	path = edge_detector
+	url = git@github.com:Chisel-blocks/edge_detector.git
