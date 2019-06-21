@@ -23,41 +23,47 @@ import breeze.math.Complex
 import edge_detector._
 import prog_delay._
 
-class f2_symbol_sync_io[T <: DspComplex[SInt], U <: UInt, V <: Bits](samplesProto: T,
+class f2_symbol_sync_io[T <: DspComplex[SInt], U <: UInt, V <: Bits, W <: DspComplex[SInt]](samplesProto: T,
       			     		       	    	             controlProto: V,
                                                                      outputProto1: U,
-                                                                     outputProto2: V)
+                                                                     outputProto2: V,
+								     debugProto:   W)
    extends Bundle {
         val iqSamples       = Input(samplesProto.cloneType)
 	val syncSearch	    = Input(controlProto.cloneType)
 	val passThru        = Input(controlProto.cloneType)
-        val iqSyncedSamples = Output(samplesProto.cloneType)
+        val iqSyncedSamples = Output(debugProto.cloneType)
+	val shortMod        = Output(outputProto1.cloneType)
         val syncMetric      = Output(outputProto1.cloneType)
         val syncFound       = Output(outputProto2.cloneType)
         override def cloneType = (new f2_symbol_sync_io(samplesProto.cloneType,
                                                         controlProto.cloneType,
                                                         outputProto1.cloneType,
-							outputProto2.cloneType)).asInstanceOf[this.type]
+							outputProto2.cloneType,
+							debugProto.cloneType)).asInstanceOf[this.type]
    }
 
-class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
+class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits, W <: DspComplex[SInt]] (
   samplesProto: T,
   controlProto: V,
   outputProto1: U,
   outputProto2: V,
+  debugProto:   W,
   n:          Int = 16,
   resolution: Int = 32
 ) extends Module {
   val io = IO(new f2_symbol_sync_io(samplesProto = DspComplex(SInt(n.W), SInt(n.W)),
       	   	  		    controlProto = Bool(),
                                     outputProto1 = UInt(resolution.W),
-   				    outputProto2 = Bool()))
+   				    outputProto2 = Bool(),
+				    debugProto   = DspComplex(SInt(resolution.W), SInt(resolution.W))))
 
   val variableDelay = Module(new prog_delay(proto = DspComplex(SInt(n.W), SInt(n.W)), maxdelay = 64))
   val edgeDetector  = Module(new edge_detector())
 
-  val sampleType = DspComplex(SInt(n.W), SInt(n.W))
+  val sampleType = DspComplex(SInt(n.W), SInt(n.W)).cloneType
   val inRegType  = DspComplex(FixedPoint(n.W, (n-2).BP), FixedPoint(n.W, (n-2).BP)).cloneType
+  val debugFilterType = DspComplex(SInt(resolution.W), SInt(resolution.W)).cloneType
 
   // The Legacy Long Training Field (L-LTF), from IEEE 802.11-2012, Annex L.
   val longTrainingField =
@@ -171,8 +177,9 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
   // Hardware starts here with the input register
   inReg := io.iqSamples.asTypeOf(inRegType)
 
-  val filterRegType = DspComplex(FixedPoint(resolution.W, ((resolution/2)-2).BP),
-                                 FixedPoint(resolution.W, ((resolution/2)-2).BP)).cloneType
+  val filterScale = 4
+  val filterRegType = DspComplex(FixedPoint(resolution.W, ((resolution/2)-filterScale).BP),
+                                 FixedPoint(resolution.W, ((resolution/2)-filterScale).BP)).cloneType
 
   // Compute the correlation with the long training field (L-LTF)
   val longChainTaps     = longTrainingCoeffs.reverse.map(tap => inReg * tap)
@@ -187,12 +194,14 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
   }
 
   val longChainOut = longTrainingChain(longChainTaps.length)
-  val longModulus  = (longChainOut.real * longChainOut.real) +
-                     (longChainOut.imag * longChainOut.imag)
 
   val longModulusReg = RegInit(0.U(resolution.W))
-  longModulusReg     := longModulus.asUInt << 4		// Shift four to compensate for energy
-                                                        // difference in the short and long filters
+
+  val longModulus = (longChainOut.real * longChainOut.real) +
+                    (longChainOut.imag * longChainOut.imag)
+
+  longModulusReg := longModulus(33,2).asUInt << 4	// Multiply by 16 to compensate for energy
+                                         	        // difference in the short and long filters
 
   // Average the longModulus over six samples to get the energy estimate
   val longEnergyTaps  = energyDetectorCoeffs.reverse.map(tap => longModulusReg * tap)
@@ -221,14 +230,15 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
   }
 
   val shortChainOut = shortTrainingChain(shortChainTaps.length)
+  io.iqSyncedSamples := shortChainOut.asTypeOf(debugFilterType)  // FIXME - temporary to look at short filter.
 
-  val shortOutReg = RegInit(0.U(resolution.W))
+  val shortModulusReg = RegInit(0.U(resolution.W))
 
   val shortModulus = (shortChainOut.real * shortChainOut.real) +
                      (shortChainOut.imag * shortChainOut.imag)
 
-  val shortModulusReg = RegInit(0.U(resolution.W))
-  shortModulusReg := shortModulus.asUInt
+  shortModulusReg := shortModulus(33,2).asUInt >> 2   // Divide by 4 to prevent overflow
+  io.shortMod := shortModulusReg // FIXME - temporary to look at short modulus
   
   // Average the shortModulus over six samples to get the energy estimate
   val shortEnergyTaps  = energyDetectorCoeffs.reverse.map(tap => shortModulusReg * tap)
@@ -259,7 +269,7 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
 
   // The output of the short training detection chain is divided by 4 to normalize
   // its energy
-  val shortDetectionOut = shortDetectionChain(shortDetectionTaps.length) >> 2
+  val shortDetectionOut = shortDetectionChain(shortDetectionTaps.length) //>> 2 FIXME dont' shift
 
   val detectionReg = RegInit(0.U(resolution.W))
   val relativeDelay = 36  // relative delay of the filtered
@@ -376,7 +386,7 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
   } .otherwise {
     	variableDelay.io.select := maximumVariableDelayClocks - detectedPeakIndex
   }
-  io.iqSyncedSamples      := variableDelay.io.optr_Z
+  //io.iqSyncedSamples      := variableDelay.io.optr_Z
 }
 
 
@@ -386,12 +396,13 @@ object f2_symbol_sync extends App {
         samplesProto = DspComplex(SInt(16.W), SInt(16.W)),
 	controlProto = Bool(),
 	outputProto1 = UInt(32.W),
-	outputProto2 = Bool())
+	outputProto2 = Bool(),
+        debugProto   = DspComplex(SInt(32.W), SInt(32.W)))
     )
 }
 
 //This is a simple unit tester for demonstration purposes
-class unit_tester(c: f2_symbol_sync[DspComplex[SInt], UInt, Bool] ) extends DspTester(c) {
+class unit_tester(c: f2_symbol_sync[DspComplex[SInt], UInt, Bool, DspComplex[SInt]] ) extends DspTester(c) {
 //Tests are here
     poke(c.io.iqSamples.real, 5)
     poke(c.io.iqSamples.imag, 102)
@@ -405,7 +416,8 @@ object unit_test extends App {
             samplesProto = DspComplex(SInt(16.W), SInt(16.W)),
 	    controlProto = Bool(),
 	    outputProto1 = UInt(32.W),
-	    outputProto2 = Bool()
+	    outputProto2 = Bool(),
+	    debugProto   = DspComplex(SInt(32.W), SInt(32.W))
         )
     ){
             c=>new unit_tester(c)
