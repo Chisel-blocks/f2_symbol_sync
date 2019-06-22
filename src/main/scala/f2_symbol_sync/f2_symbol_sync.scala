@@ -11,6 +11,30 @@
 //
 // Inititally written by dsp-blocks initmodule.sh, 20190611
 //
+// External interface:
+//
+//    iqSamples:       16 bit signed ints for both I and Q
+//    syncSearch:      Asserting this bool starts the search for the L-LTF in a frame
+//    passThru:        Asserting this bool passes the I and Q samples from the
+//                     input to the output with a fixed delay.  It also masks
+//                     the syncFound signal, so the block never asserts it.
+//    syncThreshold:   An 8 bit unsigned that sets the threshold (peak of matched
+//                     filter to average power in) for detection sync.  A good
+//                     trial value is 128.
+//    syncFound:       A bool that, when asserted, marks the first bit of the L-LTF
+//                     in the iqSyncedSamples output.
+//    iqSyncedSamples: This is the input sequence, aligned with the syncFound pulse.
+//
+//
+// Debug outputs (may be removed in the future):
+//
+//    syncMetric:      The combined output of the matched filters for the short and
+//                     long training fields.  This is the same as A. Sibille, C. Oestges,
+//                     and A. Zanella (eds.), MIMO: From Theory to Implementation, chapter 7,
+//                     equation 7.13.
+//    signalPower:     The square magnitude of the input samples, filtered by a 64
+//                     sample boxcar integrator.
+//
 
 package f2_symbol_sync
 
@@ -23,35 +47,42 @@ import breeze.math.Complex
 import edge_detector._
 import prog_delay._
 
-class f2_symbol_sync_io[T <: DspComplex[SInt], U <: UInt, V <: Bits](samplesProto: T,
-      			     		       	    	             controlProto: V,
-                                                                     outputProto1: U,
-                                                                     outputProto2: V)
+class f2_symbol_sync_io[T <: DspComplex[SInt], U <: UInt, V <: Bits](samplesProto:  T,
+                                                                     controlProto1: V,
+                                                                     controlProto2: U,
+                                                                     outputProto1:  U,
+                                                                     outputProto2:  V)
    extends Bundle {
         val iqSamples       = Input(samplesProto.cloneType)
-	val syncSearch	    = Input(controlProto.cloneType)
-	val passThru        = Input(controlProto.cloneType)
+        val syncSearch	    = Input(controlProto1.cloneType)
+        val passThru        = Input(controlProto1.cloneType)
+        val syncThreshold   = Input(controlProto2.cloneType)
         val iqSyncedSamples = Output(samplesProto.cloneType)
         val syncMetric      = Output(outputProto1.cloneType)
         val syncFound       = Output(outputProto2.cloneType)
+        val signalPower     = Output(outputProto1.cloneType)
         override def cloneType = (new f2_symbol_sync_io(samplesProto.cloneType,
-                                                        controlProto.cloneType,
+                                                        controlProto1.cloneType,
+                                                        controlProto2.cloneType,
                                                         outputProto1.cloneType,
-							outputProto2.cloneType)).asInstanceOf[this.type]
+                                                        outputProto2.cloneType)).asInstanceOf[this.type]
    }
 
 class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
-  samplesProto: T,
-  controlProto: V,
-  outputProto1: U,
-  outputProto2: V,
-  n:          Int = 16,
-  resolution: Int = 32
+  samplesProto:  T,
+  controlProto1: V,
+  controlProto2: U,
+  outputProto1:  U,
+  outputProto2:  V,
+  n:             Int = 16,
+  resolution:    Int = 32,
+  thresholdBits: Int = 8
 ) extends Module {
-  val io = IO(new f2_symbol_sync_io(samplesProto = DspComplex(SInt(n.W), SInt(n.W)),
-      	   	  		    controlProto = Bool(),
-                                    outputProto1 = UInt(resolution.W),
-   				    outputProto2 = Bool()))
+  val io = IO(new f2_symbol_sync_io(samplesProto  = DspComplex(SInt(n.W), SInt(n.W)),
+    controlProto1 = Bool(),
+    controlProto2 = UInt(thresholdBits.W),
+    outputProto1  = UInt(resolution.W),
+    outputProto2  = Bool()))
 
   val variableDelay = Module(new prog_delay(proto = DspComplex(SInt(n.W), SInt(n.W)), maxdelay = 64))
   val edgeDetector  = Module(new edge_detector())
@@ -152,7 +183,7 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
   val shortTrainingConj   = shortTrainingField.map(c => c.conjugate)
   val shortTrainingCoeffs = shortTrainingConj.map(c => DspComplex.wire(FixedPoint.fromDouble(c.real, n.W, (n-2).BP),
                                                                        FixedPoint.fromDouble(c.imag, n.W, (n-2).BP)))
- 
+
   // Six sample boxcar filter for energy detection
   val energyDetectorCoeffs = Seq.fill(6)(1.U(resolution.W))
 
@@ -160,9 +191,12 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
   var shortDetectionTemplate = Seq.fill(64)(0.U(resolution.W))
   val shortDetectionCoeffs = shortDetectionTemplate.reverse.zipWithIndex.foreach({case (_, 15) => 1.U(resolution.W)
                                                                           case (_, 23) => 1.U(resolution.W)
-	  				                                  case (_, 39) => 1.U(resolution.W)
-				                                          case (_, 63) => 1.U(resolution.W)
-					                                  case (v,  _) => v})
+                                                                          case (_, 39) => 1.U(resolution.W)
+                                                                          case (_, 63) => 1.U(resolution.W)
+                                                                          case (v,  _) => v})
+  // A sixteen sample boxcar filter for RSSI measurement
+  val rssiCoeffs = Seq.fill(64)(1.U(resolution.W))
+
   // The input, a DspComplex of SInts, stored in a register
   // and cast to a DspComplex of FixedPoints.
   val inReg = RegInit(0.U.asTypeOf(inRegType))
@@ -175,13 +209,32 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
   val filterRegType = DspComplex(FixedPoint(resolution.W, ((resolution/2)-filterScale).BP),
                                  FixedPoint(resolution.W, ((resolution/2)-filterScale).BP)).cloneType
 
+  // Compute the signal power; it will be needed later.
+  val modulusReg    = RegInit(0.U(resolution.W))
+  val signalModulus = (inReg.real * inReg.real) + (inReg.imag * inReg.imag)
+  modulusReg := (signalModulus.asUInt) >> 8   // divide by 256 before going into the 64 element smoothing filter
+
+  val rssiTaps = rssiCoeffs.reverse.map(tap => modulusReg * tap)
+  val rssiChain = RegInit(VecInit(Seq.fill(rssiTaps.length + 1)(0.U(resolution.W))))
+
+  for ( i <- 0 to rssiTaps.length - 1) {
+            if (i == 0) {
+                rssiChain(i + 1) := rssiTaps(i)
+            } else {
+                rssiChain(i + 1) := rssiChain(i) + rssiTaps(i)
+            }
+  }
+
+  val signalStrength = rssiChain(rssiTaps.length)
+  io.signalPower := signalStrength
+
   // Compute the correlation with the long training field (L-LTF)
   val longChainTaps     = longTrainingCoeffs.reverse.map(tap => inReg * tap)
   val longTrainingChain = RegInit(VecInit(Seq.fill(longChainTaps.length + 1)(0.U.asTypeOf(filterRegType))))
 
   for ( i <- 0 to longChainTaps.length - 1) {
             if (i == 0) {
-	        longTrainingChain(i + 1) := longChainTaps(i)
+                longTrainingChain(i + 1) := longChainTaps(i)
             } else {
                 longTrainingChain(i + 1) := longTrainingChain(i) + longChainTaps(i)
             }
@@ -194,8 +247,8 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
   val longModulus = (longChainOut.real * longChainOut.real) +
                     (longChainOut.imag * longChainOut.imag)
 
-  longModulusReg := longModulus(33,2).asUInt << 4	// Multiply by 16 to compensate for energy
-                                         	        // difference in the short and long filters
+  longModulusReg := (longModulus(33,2).asUInt) << 4	// Multiply by 16 to compensate for energy
+                                                        // difference in the short and long filters
 
   // Average the longModulus over six samples to get the energy estimate
   val longEnergyTaps  = energyDetectorCoeffs.reverse.map(tap => longModulusReg * tap)
@@ -230,10 +283,10 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
   val shortModulus = (shortChainOut.real * shortChainOut.real) +
                      (shortChainOut.imag * shortChainOut.imag)
 
-  shortModulusReg := shortModulus(33,2).asUInt >> 2   // Divide by 4 to compensate for the
-  		     			              // gain of the four finger detection
-						      // filter.
-  
+  shortModulusReg := (shortModulus(33,2).asUInt) >> 2   // Divide by 4 to compensate for the
+                                                      // gain of the four finger detection
+                                                      // filter.
+
   // Average the shortModulus over six samples to get the energy estimate
   val shortEnergyTaps  = energyDetectorCoeffs.reverse.map(tap => shortModulusReg * tap)
   val shortEnergyChain = RegInit(VecInit(Seq.fill(shortEnergyTaps.length + 1)(0.U(resolution.W))))
@@ -283,7 +336,7 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
 
   val windowLength = 16
   val windowCounterLength = log2Ceil(windowLength)
- 
+
   val previousPeakVal = RegInit(0.U(resolution.W))
   val currentPeakVal  = RegInit(0.U(resolution.W))
 
@@ -295,6 +348,9 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
   val peakFactor = FixedPoint.fromDouble(0.85, resolution.W, (resolution-2).BP)
 
   val detectedPeakIndex = RegInit(0.U(windowCounterLength.W))
+
+  val threshold = RegInit(0.U(thresholdBits.W))
+  threshold := io.syncThreshold
 
   //
   // Control interface
@@ -326,10 +382,11 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
       previousPeakIndex := currentPeakIndex
 
       when ((! syncFlagInhibit) &&
-            (peakFactor * previousPeakVal.asTypeOf(peakFactorType) > currentPeakVal.asTypeOf(peakFactorType))) {
-    	   syncFlag          := true.B
+        (peakFactor * previousPeakVal.asTypeOf(peakFactorType) > currentPeakVal.asTypeOf(peakFactorType)) &&
+        (previousPeakVal > (signalStrength >> 4) * threshold)) {
+           syncFlag          := true.B
            syncFlagInhibit   := true.B
-	   detectedPeakIndex := previousPeakIndex
+           detectedPeakIndex := previousPeakIndex
        }
 
       currentPeakVal    := detectionReg
@@ -339,12 +396,13 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
   } .otherwise {
       syncFlag := false.B
       when (detectionReg > currentPeakVal) {
-      	   currentPeakVal   := detectionReg
-      	   currentPeakIndex := windowCounter
-    	   }
+           currentPeakVal   := detectionReg
+           currentPeakIndex := windowCounter
+           }
       windowCounter := windowCounter + 1.U
   }
-  
+
+
   // Here the syncFound pulse is aligned with the output IQ samples.
   //
   // The val 'windowPadClocks' delays both the output samples and
@@ -354,7 +412,7 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
   //
   val windowPadClocks = windowLength
   io.syncFound := ShiftRegister(syncFlag, windowPadClocks)
-  
+
   // The delay is made two parts, a constant delay implemented
   // by a shift register, and a variable delay implemented by a
   // prog_delay module.
@@ -378,7 +436,7 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
   when (io.passThru) {
        variableDelay.io.select := 0.U
   } .otherwise {
-    	variableDelay.io.select := maximumVariableDelayClocks - detectedPeakIndex
+        variableDelay.io.select := maximumVariableDelayClocks - detectedPeakIndex
   }
   io.iqSyncedSamples := variableDelay.io.optr_Z
 }
@@ -387,10 +445,11 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
 //This gives you verilog
 object f2_symbol_sync extends App {
     chisel3.Driver.execute(args, () => new f2_symbol_sync(
-        samplesProto = DspComplex(SInt(16.W), SInt(16.W)),
-	controlProto = Bool(),
-	outputProto1 = UInt(32.W),
-	outputProto2 = Bool())
+        samplesProto  = DspComplex(SInt(16.W), SInt(16.W)),
+        controlProto1 = Bool(),
+        controlProto2 = UInt(8.W),
+        outputProto1  = UInt(32.W),
+        outputProto2  = Bool())
     )
 }
 
@@ -406,10 +465,11 @@ class unit_tester(c: f2_symbol_sync[DspComplex[SInt], UInt, Bool] ) extends DspT
 //This is the test driver
 object unit_test extends App {
     iotesters.Driver.execute(args, () => new f2_symbol_sync(
-            samplesProto = DspComplex(SInt(16.W), SInt(16.W)),
-	    controlProto = Bool(),
-	    outputProto1 = UInt(32.W),
-	    outputProto2 = Bool())
+            samplesProto  = DspComplex(SInt(16.W), SInt(16.W)),
+            controlProto1 = Bool(),
+            controlProto2 = UInt(8.W),
+            outputProto1  = UInt(32.W),
+            outputProto2  = Bool())
         )
     {
             c=>new unit_tester(c)
