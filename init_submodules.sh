@@ -23,7 +23,7 @@ git submodule update --init
 #sbt publishLocal
 #sbt assembly
 
-Recursively init submodules
+#Recursively init submodules
 SUBMODULES="\
     prog_delay \
     edge_detector \
