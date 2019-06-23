@@ -60,7 +60,7 @@ class f2_symbol_sync_io[T <: DspComplex[SInt], U <: UInt, V <: Bits](samplesProt
         val iqSyncedSamples = Output(samplesProto.cloneType)
         val syncMetric      = Output(outputProto1.cloneType)
         val syncFound       = Output(outputProto2.cloneType)
-        val signalPower     = Output(outputProto1.cloneType)
+        //val signalPower     = Output(outputProto1.cloneType)
         override def cloneType = (new f2_symbol_sync_io(samplesProto.cloneType,
                                                         controlProto1.cloneType,
                                                         controlProto2.cloneType,
@@ -226,7 +226,7 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
   }
 
   val signalStrength = rssiChain(rssiTaps.length)
-  io.signalPower := signalStrength
+  //io.signalPower := signalStrength  // Used for debugging
 
   // Compute the correlation with the long training field (L-LTF)
   val longChainTaps     = longTrainingCoeffs.reverse.map(tap => inReg * tap)
