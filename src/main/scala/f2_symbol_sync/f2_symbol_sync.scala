@@ -17,12 +17,14 @@
 //    syncSearch:      Asserting this bool starts the search for the L-LTF in a frame
 //    passThru:        Asserting this bool passes the I and Q samples from the
 //                     input to the output with a fixed delay.  It also masks
-//                     the syncFound signal, so the block never asserts it.
+//                     the frameSync and symbolSync signals, so the block never
+//                     asserts them.
 //    syncThreshold:   An 8 bit unsigned that sets the threshold (peak of matched
 //                     filter to average power in) for detection sync.  A good
 //                     trial value is 128.
-//    syncFound:       A bool that, when asserted, marks the first bit of the L-LTF
+//    frameSync:       A bool that, when asserted, marks the first bit of the L-LTF
 //                     in the iqSyncedSamples output.
+//    symbolSync:      A pulse that goes high at the start of each OFDM symbol.
 //    iqSyncedSamples: This is the input sequence, aligned with the syncFound pulse.
 //
 //
@@ -61,7 +63,8 @@ class f2_symbol_sync_io[T <: DspComplex[SInt], U <: UInt, V <: Bits](samplesProt
         val syncThreshold   = Input(controlProto2.cloneType)
         val iqSyncedSamples = Output(samplesProto.cloneType)
         val syncMetric      = Output(outputProto1.cloneType)
-        val syncFound       = Output(outputProto2.cloneType)
+        val frameSync       = Output(outputProto2.cloneType)
+        val symbolSync      = Output(outputProto2.cloneType)
         val currentUser     = Output(outputProto3.cloneType)
         //val signalPower     = Output(outputProto1.cloneType)
         override def cloneType = (new f2_symbol_sync_io(samplesProto.cloneType,
@@ -92,7 +95,7 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
     outputProto3  = UInt(log2Ceil(maxUsers).W)))
 
   val variableDelay = Module(new prog_delay(proto = DspComplex(SInt(n.W), SInt(n.W)), maxdelay = 64))
-  val passThruEdgeDetector   = Module(new edge_detector())
+  val syncSearchEdgeDetector = Module(new edge_detector())
   val resetUsersEdgeDetector = Module(new edge_detector())
 
   val sampleType = DspComplex(SInt(n.W), SInt(n.W)).cloneType
@@ -336,11 +339,16 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
   // At this point we have the syncMetric.  Now, it is necessary to detect the magnitude of the peak
   // in a window of 16 samples.  The peak value is saved and compared to the last peak.  If the
   // current peak is less than 85 percent as high as the previous, sync is found and  I set
-  // the syncFound signal.
+  // the frameSync signal.
   //
 
-  val syncFlag        = RegInit(false.B)
-  val syncFlagInhibit = RegInit(true.B)
+  val ofdmSymbolLength       = 64  // An OFDM symbol is 64 clocks long.
+  val ofdmSymbolCounter      = RegInit(0.U(log2Ceil(ofdmSymbolLength).W))
+  val savedOFDMSymbolCounter = RegInit(0.U(log2Ceil(ofdmSymbolLength).W))
+  val ofdmSymbolSync         = RegInit(false.B)
+
+  val frameSyncFlag        = RegInit(false.B)
+  val frameSyncFlagInhibit = RegInit(true.B)
 
   val windowLength = 16
   val windowCounterLength = log2Ceil(windowLength)
@@ -366,7 +374,7 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
   // The module initializes into the "inhibited" state, with the
   // matched filters running but never emitting a "foundSync" pulse.
   // When the "io.syncSearch" signal is asserted, it is synchronized
-  // with the clock and "syncFlagInhibit"is set to false.
+  // with the clock and "frameSyncFlagInhibit"is set to false.
   //
   // Asserting the "io.passThru" signal overrides io.syncSearch.  It also
   // sets the variable delay that adjusts the output data alignment
@@ -375,12 +383,12 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
   //
   val passThruReg = RegInit(false.B)
 
-  passThruEdgeDetector.io.A := io.syncSearch
+  syncSearchEdgeDetector.io.A := io.syncSearch
   passThruReg               := io.passThru
-  when (passThruEdgeDetector.io.rising && (! passThruReg)) {
-       syncFlagInhibit := false.B
+  when (syncSearchEdgeDetector.io.rising && (! passThruReg)) {
+       frameSyncFlagInhibit := false.B
   } .elsewhen (passThruReg) {
-       syncFlagInhibit := true.B
+       frameSyncFlagInhibit := true.B
   }
 
   val userNumber = RegInit(0.U(log2Ceil(maxUsers).W))
@@ -398,38 +406,53 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
       previousPeakVal   := currentPeakVal
       previousPeakIndex := currentPeakIndex
 
-      when ((! syncFlagInhibit) &&
+      when ((! frameSyncFlagInhibit) &&
         (peakFactor * previousPeakVal.asTypeOf(peakFactorType) > currentPeakVal.asTypeOf(peakFactorType)) &&
         (previousPeakVal > (signalStrength >> 4) * threshold)) {
-           syncFlag          := true.B
-           syncFlagInhibit   := true.B
-           userNumber        := userNumber + 1.U
-           detectedPeakIndex := previousPeakIndex
-       }
+           frameSyncFlag               := true.B
+           frameSyncFlagInhibit        := true.B
+           userNumber             := userNumber + 1.U
+           savedOFDMSymbolCounter := ofdmSymbolCounter
+           ofdmSymbolSync         := true.B
+           detectedPeakIndex      := previousPeakIndex
+      } .elsewhen (frameSyncFlagInhibit && ofdmSymbolCounter === savedOFDMSymbolCounter) {
+        ofdmSymbolSync := true.B
+      }
 
       currentPeakVal    := detectionReg
       currentPeakIndex  := 0.U
-      windowCounter     := windowCounter + 1.U
+      windowCounter     := windowCounter     + 1.U
+      ofdmSymbolCounter := ofdmSymbolCounter + 1.U
 
   } .otherwise {
-      syncFlag := false.B
+      frameSyncFlag  := false.B
+
       when (detectionReg > currentPeakVal) {
            currentPeakVal   := detectionReg
            currentPeakIndex := windowCounter
-           }
-      windowCounter := windowCounter + 1.U
+      }
+
+      when (frameSyncFlagInhibit && ofdmSymbolCounter === savedOFDMSymbolCounter) {
+        ofdmSymbolSync := true.B
+      } .otherwise {
+        ofdmSymbolSync := false.B
+      }
+
+      windowCounter     := windowCounter     + 1.U
+      ofdmSymbolCounter := ofdmSymbolCounter + 1.U
   }
 
 
-  // Here the syncFound pulse is aligned with the output IQ samples.
+  // Here the frameSync pulse is aligned with the output IQ samples.
   //
   // The val 'windowPadClocks' delays both the output samples and
-  // the syncFound pulse, so that the peak index in the sliding
+  // the frameSync pulse, so that the peak index in the sliding
   // detection window will not change while any part of the L-LTF
   // is passing through the variable delay.
   //
   val windowPadClocks = windowLength
-  io.syncFound := ShiftRegister(syncFlag, windowPadClocks)
+  io.frameSync  := ShiftRegister(frameSyncFlag,  windowPadClocks)
+  io.symbolSync := ShiftRegister(ofdmSymbolSync, windowPadClocks)
 
   // The delay is made two parts, a constant delay implemented
   // by a shift register, and a variable delay implemented by a
@@ -478,7 +501,7 @@ class unit_tester(c: f2_symbol_sync[DspComplex[SInt], UInt, Bool] ) extends DspT
     poke(c.io.iqSamples.real, 5)
     poke(c.io.iqSamples.imag, 102)
     step(5)
-    expect(c.io.syncFound, false)
+    expect(c.io.frameSync, false)
 }
 
 //This is the test driver
