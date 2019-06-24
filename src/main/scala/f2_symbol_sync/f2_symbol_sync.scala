@@ -51,21 +51,25 @@ class f2_symbol_sync_io[T <: DspComplex[SInt], U <: UInt, V <: Bits](samplesProt
                                                                      controlProto1: V,
                                                                      controlProto2: U,
                                                                      outputProto1:  U,
-                                                                     outputProto2:  V)
+                                                                     outputProto2:  V,
+                                                                     outputProto3:  U)
    extends Bundle {
         val iqSamples       = Input(samplesProto.cloneType)
+        val resetUsers      = Input(controlProto1.cloneType)
         val syncSearch	    = Input(controlProto1.cloneType)
         val passThru        = Input(controlProto1.cloneType)
         val syncThreshold   = Input(controlProto2.cloneType)
         val iqSyncedSamples = Output(samplesProto.cloneType)
         val syncMetric      = Output(outputProto1.cloneType)
         val syncFound       = Output(outputProto2.cloneType)
+        val currentUser     = Output(outputProto3.cloneType)
         //val signalPower     = Output(outputProto1.cloneType)
         override def cloneType = (new f2_symbol_sync_io(samplesProto.cloneType,
                                                         controlProto1.cloneType,
                                                         controlProto2.cloneType,
                                                         outputProto1.cloneType,
-                                                        outputProto2.cloneType)).asInstanceOf[this.type]
+                                                        outputProto2.cloneType,
+                                                        outputProto3.cloneType)).asInstanceOf[this.type]
    }
 
 class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
@@ -74,18 +78,22 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
   controlProto2: U,
   outputProto1:  U,
   outputProto2:  V,
+  outputProto3:  U,
   n:             Int = 16,
   resolution:    Int = 32,
-  thresholdBits: Int = 8
+  thresholdBits: Int = 8,
+  maxUsers:      Int = 16
 ) extends Module {
   val io = IO(new f2_symbol_sync_io(samplesProto  = DspComplex(SInt(n.W), SInt(n.W)),
     controlProto1 = Bool(),
     controlProto2 = UInt(thresholdBits.W),
     outputProto1  = UInt(resolution.W),
-    outputProto2  = Bool()))
+    outputProto2  = Bool(),
+    outputProto3  = UInt(log2Ceil(maxUsers).W)))
 
   val variableDelay = Module(new prog_delay(proto = DspComplex(SInt(n.W), SInt(n.W)), maxdelay = 64))
-  val edgeDetector  = Module(new edge_detector())
+  val passThruEdgeDetector   = Module(new edge_detector())
+  val resetUsersEdgeDetector = Module(new edge_detector())
 
   val sampleType = DspComplex(SInt(n.W), SInt(n.W)).cloneType
   val inRegType  = DspComplex(FixedPoint(n.W, (n-2).BP), FixedPoint(n.W, (n-2).BP)).cloneType
@@ -367,13 +375,22 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
   //
   val passThruReg = RegInit(false.B)
 
-  edgeDetector.io.A := io.syncSearch
-  passThruReg       := io.passThru
-  when (edgeDetector.io.rising && (! passThruReg)) {
+  passThruEdgeDetector.io.A := io.syncSearch
+  passThruReg               := io.passThru
+  when (passThruEdgeDetector.io.rising && (! passThruReg)) {
        syncFlagInhibit := false.B
   } .elsewhen (passThruReg) {
        syncFlagInhibit := true.B
   }
+
+  val userNumber = RegInit(0.U(log2Ceil(maxUsers).W))
+
+  resetUsersEdgeDetector.io.A := io.resetUsers
+  when (resetUsersEdgeDetector.io.rising) {
+        userNumber := ~(0.U(log2Ceil(maxUsers).W))
+  }
+
+  io.currentUser := userNumber
 
   // state machine goes here
 
@@ -386,6 +403,7 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
         (previousPeakVal > (signalStrength >> 4) * threshold)) {
            syncFlag          := true.B
            syncFlagInhibit   := true.B
+           userNumber        := userNumber + 1.U
            detectedPeakIndex := previousPeakIndex
        }
 
@@ -449,7 +467,8 @@ object f2_symbol_sync extends App {
         controlProto1 = Bool(),
         controlProto2 = UInt(8.W),
         outputProto1  = UInt(32.W),
-        outputProto2  = Bool())
+        outputProto2  = Bool(),
+        outputProto3  = UInt(4.W))
     )
 }
 
@@ -469,7 +488,8 @@ object unit_test extends App {
             controlProto1 = Bool(),
             controlProto2 = UInt(8.W),
             outputProto1  = UInt(32.W),
-            outputProto2  = Bool())
+            outputProto2  = Bool(),
+            outputProto3  = UInt(4.W))
         )
     {
             c=>new unit_tester(c)
