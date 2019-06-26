@@ -1,8 +1,8 @@
 // Dsp-block f2_symbol_sync
 //
 // Take a digital IQ input stream and evaluate the correlation
-// with the 801.11n short and long training fields.  These are
-// specified in IEEE 801.11-2012, Annex L.
+// with the 802.11n short and long training fields.  These are
+// specified in IEEE 802.11-2012, Annex L.
 //
 // The results of the correlation are squared and sent to an energy
 // detector.
@@ -20,7 +20,7 @@
 //                     the frameSync and symbolSync signals, so the block never
 //                     asserts them.
 //    syncThreshold:   An 8 bit unsigned that sets the threshold (peak of matched
-//                     filter to average power in) for detection sync.  A good
+//                     filter to average power in) for detection of sync.  A good
 //                     trial value is 128.
 //    frameSync:       A bool that, when asserted, marks the first bit of the L-LTF
 //                     in the iqSyncedSamples output.
@@ -36,6 +36,14 @@
 //                     equation 7.13.
 //    signalPower:     The square magnitude of the input samples, filtered by a 64
 //                     sample boxcar integrator.
+//    crossPower:      The autocorrelation of the input signal with a lag of 32 samples,
+//                     filtered by a 32 sample boxcar integrator.
+//    crossMagnitude:  The (approximate) magnitude of crossPower.  Computed using the
+//                     formula
+//
+//                         approxMag = 1.0 * max(|I|, |Q|) + 0.25 * min(|I|, |Q|)
+//
+//                     where the multiplication by 0.25 is implmented by a shift.
 //
 
 package f2_symbol_sync
@@ -49,12 +57,13 @@ import breeze.math.Complex
 import edge_detector._
 import prog_delay._
 
-class f2_symbol_sync_io[T <: DspComplex[SInt], U <: UInt, V <: Bits](samplesProto:  T,
+class f2_symbol_sync_io[T <: DspComplex[SInt], U <: UInt, V <: Bits, W <: DspComplex[SInt]](samplesProto:  T,
                                                                      controlProto1: V,
                                                                      controlProto2: U,
                                                                      outputProto1:  U,
                                                                      outputProto2:  V,
-                                                                     outputProto3:  U)
+                                                                     outputProto3:  U,
+                                                                     outputProto4:  W)
    extends Bundle {
         val iqSamples       = Input(samplesProto.cloneType)
         val resetUsers      = Input(controlProto1.cloneType)
@@ -66,22 +75,26 @@ class f2_symbol_sync_io[T <: DspComplex[SInt], U <: UInt, V <: Bits](samplesProt
         val frameSync       = Output(outputProto2.cloneType)
         val symbolSync      = Output(outputProto2.cloneType)
         val currentUser     = Output(outputProto3.cloneType)
-        //val signalPower     = Output(outputProto1.cloneType)
+        val signalPower     = Output(outputProto1.cloneType)
+        val crossPower      = Output(outputProto4.cloneType)
+        val crossMagnitude  = Output(outputProto1.cloneType)
         override def cloneType = (new f2_symbol_sync_io(samplesProto.cloneType,
                                                         controlProto1.cloneType,
                                                         controlProto2.cloneType,
                                                         outputProto1.cloneType,
                                                         outputProto2.cloneType,
-                                                        outputProto3.cloneType)).asInstanceOf[this.type]
+                                                        outputProto3.cloneType,
+                                                        outputProto4.cloneType)).asInstanceOf[this.type]
    }
 
-class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
+class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits, W <: DspComplex[SInt]] (
   samplesProto:  T,
   controlProto1: V,
   controlProto2: U,
   outputProto1:  U,
   outputProto2:  V,
   outputProto3:  U,
+  outputProto4:  W,
   n:             Int = 16,
   resolution:    Int = 32,
   thresholdBits: Int = 8,
@@ -92,7 +105,8 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
     controlProto2 = UInt(thresholdBits.W),
     outputProto1  = UInt(resolution.W),
     outputProto2  = Bool(),
-    outputProto3  = UInt(log2Ceil(maxUsers).W)))
+    outputProto3  = UInt(log2Ceil(maxUsers).W),
+    outputProto4  = DspComplex(SInt(resolution.W), SInt(resolution.W))))
 
   val variableDelay = Module(new prog_delay(proto = DspComplex(SInt(n.W), SInt(n.W)), maxdelay = 64))
   val syncSearchEdgeDetector = Module(new edge_detector())
@@ -100,6 +114,11 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
 
   val sampleType = DspComplex(SInt(n.W), SInt(n.W)).cloneType
   val inRegType  = DspComplex(FixedPoint(n.W, (n-2).BP), FixedPoint(n.W, (n-2).BP)).cloneType
+
+  // FIXME for development only
+  val crossPowerType = DspComplex(FixedPoint(resolution.W, (resolution-2).BP), FixedPoint(resolution.W, (resolution-2).BP)).cloneType
+  val crossPowerReg  = RegInit(0.U.asTypeOf(crossPowerType))
+  val crossOutType   = DspComplex(SInt(resolution.W), SInt(resolution.W))
 
   // The Legacy Long Training Field (L-LTF), from IEEE 802.11-2012, Annex L.
   val longTrainingField =
@@ -205,8 +224,11 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
                                                                           case (_, 39) => 1.U(resolution.W)
                                                                           case (_, 63) => 1.U(resolution.W)
                                                                           case (v,  _) => v})
-  // A sixteen sample boxcar filter for RSSI measurement
+  // A 64 sample boxcar filter for RSSI measurement
   val rssiCoeffs = Seq.fill(64)(1.U(resolution.W))
+
+  // A 32 sample delay is used for frame detection
+  val frameDetectionWindowLength = 32
 
   // The input, a DspComplex of SInts, stored in a register
   // and cast to a DspComplex of FixedPoints.
@@ -237,7 +259,58 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
   }
 
   val signalStrength = rssiChain(rssiTaps.length)
-  //io.signalPower := signalStrength  // Used for debugging
+  io.signalPower := signalStrength  // Used for debugging
+
+  // Here the cross-correlated and filtered.
+  val delayedSample = ShiftRegister(inReg, frameDetectionWindowLength)
+  crossPowerReg := inReg * (delayedSample.conj())
+  val crossPowerReal = RegInit(0.S(resolution.W))
+  val crossPowerImag = RegInit(0.S(resolution.W))
+  crossPowerReal := (crossPowerReg.real >> 5).asSInt
+  crossPowerImag := (crossPowerReg.imag >> 5).asSInt
+  val scaledCrossPower = DspComplex.wire(crossPowerReal, crossPowerImag)
+
+  // Compute the filtered cross power
+  // The real and imaginary parts are filtered separately, since the taps are
+  // purely real (and equal to 1).
+  //
+  val frameDetectorCoeffs = Seq.fill(frameDetectionWindowLength)(1.S(resolution.W))
+
+  val realCrossTaps  = frameDetectorCoeffs.reverse.map(tap => crossPowerReal * tap)
+  val realCrossChain = RegInit(VecInit(Seq.fill(realCrossTaps.length + 1)(0.S(resolution.W))))
+
+  val imagCrossTaps  = frameDetectorCoeffs.reverse.map(tap => crossPowerImag * tap)
+  val imagCrossChain = RegInit(VecInit(Seq.fill(imagCrossTaps.length + 1)(0.S(resolution.W))))
+
+  for ( i <- 0 to frameDetectionWindowLength - 1) {
+            if (i == 0) {
+                realCrossChain(i + 1) := realCrossTaps(i)
+                imagCrossChain(i + 1) := imagCrossTaps(i)
+            } else {
+                realCrossChain(i + 1) := realCrossChain(i) + realCrossTaps(i)
+                imagCrossChain(i + 1) := imagCrossChain(i) + imagCrossTaps(i)
+            }
+  }
+
+  val crossMagnitudeReg = RegInit(0.U(resolution.W))
+
+  // The simplest approximation to the complex magnitude.
+  //
+  // Found at http://dspguru.com/dsp/tricks/magnitude-estimator
+  //
+  when ((realCrossChain(realCrossTaps.length)).abs() > (imagCrossChain(imagCrossTaps.length)).abs()) {
+    crossMagnitudeReg := realCrossChain(realCrossTaps.length).abs().asUInt + (imagCrossChain(imagCrossTaps.length).abs().asUInt >> 2)
+  } .otherwise {
+    crossMagnitudeReg := (realCrossChain(realCrossTaps.length).abs().asUInt >> 2) + imagCrossChain(imagCrossTaps.length).abs().asUInt
+  }
+
+  val crossOutReg   = RegInit(0.S.asTypeOf(DspComplex(SInt(resolution.W), SInt(resolution.W))))
+  val crossPowerOut = DspComplex.wire(realCrossChain(realCrossTaps.length),
+                                      imagCrossChain(imagCrossTaps.length))
+
+  crossOutReg := crossPowerOut
+  io.crossPower := crossOutReg.asTypeOf(crossOutType)
+  io.crossMagnitude := crossMagnitudeReg
 
   // Compute the correlation with the long training field (L-LTF)
   val longChainTaps     = longTrainingCoeffs.reverse.map(tap => inReg * tap)
@@ -491,12 +564,13 @@ object f2_symbol_sync extends App {
         controlProto2 = UInt(8.W),
         outputProto1  = UInt(32.W),
         outputProto2  = Bool(),
-        outputProto3  = UInt(4.W))
+        outputProto3  = UInt(4.W),
+        outputProto4  = DspComplex(SInt(32.W), SInt(32.W)))
     )
 }
 
 //This is a simple unit tester for demonstration purposes
-class unit_tester(c: f2_symbol_sync[DspComplex[SInt], UInt, Bool] ) extends DspTester(c) {
+class unit_tester(c: f2_symbol_sync[DspComplex[SInt], UInt, Bool, DspComplex[SInt]]) extends DspTester(c) {
 //Tests are here
     poke(c.io.iqSamples.real, 5)
     poke(c.io.iqSamples.imag, 102)
@@ -512,7 +586,8 @@ object unit_test extends App {
             controlProto2 = UInt(8.W),
             outputProto1  = UInt(32.W),
             outputProto2  = Bool(),
-            outputProto3  = UInt(4.W))
+            outputProto3  = UInt(4.W),
+            outputProto4  = DspComplex(SInt(32.W), SInt(32.W)))
         )
     {
             c=>new unit_tester(c)
