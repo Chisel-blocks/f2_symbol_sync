@@ -19,9 +19,10 @@
 //                     input to the output with a fixed delay.  It also masks
 //                     the frameSync and symbolSync signals, so the block never
 //                     asserts them.
-//    syncThreshold:   An 8 bit unsigned that sets the threshold (peak of matched
-//                     filter to average power in) for detection of sync.  A good
-//                     trial value is 128.
+//    frameThreshold:  An 8 bit unsigned that sets the threshold for frame detection.
+//                     Synchronization is achieved when the first time the sync
+//                     threshold is exceeded after the frame  short training sequence
+//                     is detected.
 //    frameSync:       A bool that, when asserted, marks the first bit of the L-LTF
 //                     in the iqSyncedSamples output.
 //    symbolSync:      A pulse that goes high at the start of each OFDM symbol.
@@ -57,44 +58,40 @@ import breeze.math.Complex
 import edge_detector._
 import prog_delay._
 
-class f2_symbol_sync_io[T <: DspComplex[SInt], U <: UInt, V <: Bits, W <: DspComplex[SInt]](samplesProto:  T,
+class f2_symbol_sync_io[T <: DspComplex[SInt], U <: UInt, V <: Bits](samplesProto:  T,
                                                                      controlProto1: V,
                                                                      controlProto2: U,
                                                                      outputProto1:  U,
                                                                      outputProto2:  V,
-                                                                     outputProto3:  U,
-                                                                     outputProto4:  W)
+                                                                     outputProto3:  U)
    extends Bundle {
         val iqSamples       = Input(samplesProto.cloneType)
         val resetUsers      = Input(controlProto1.cloneType)
         val syncSearch	    = Input(controlProto1.cloneType)
         val passThru        = Input(controlProto1.cloneType)
-        val syncThreshold   = Input(controlProto2.cloneType)
+        val frameThreshold  = Input(controlProto2.cloneType)
         val iqSyncedSamples = Output(samplesProto.cloneType)
         val syncMetric      = Output(outputProto1.cloneType)
         val frameSync       = Output(outputProto2.cloneType)
         val symbolSync      = Output(outputProto2.cloneType)
         val currentUser     = Output(outputProto3.cloneType)
         val signalPower     = Output(outputProto1.cloneType)
-        val crossPower      = Output(outputProto4.cloneType)
         val crossMagnitude  = Output(outputProto1.cloneType)
         override def cloneType = (new f2_symbol_sync_io(samplesProto.cloneType,
                                                         controlProto1.cloneType,
                                                         controlProto2.cloneType,
                                                         outputProto1.cloneType,
                                                         outputProto2.cloneType,
-                                                        outputProto3.cloneType,
-                                                        outputProto4.cloneType)).asInstanceOf[this.type]
+                                                        outputProto3.cloneType)).asInstanceOf[this.type]
    }
 
-class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits, W <: DspComplex[SInt]] (
+class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
   samplesProto:  T,
   controlProto1: V,
   controlProto2: U,
   outputProto1:  U,
   outputProto2:  V,
   outputProto3:  U,
-  outputProto4:  W,
   n:             Int = 16,
   resolution:    Int = 32,
   thresholdBits: Int = 8,
@@ -105,8 +102,7 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits, W <: DspComple
     controlProto2 = UInt(thresholdBits.W),
     outputProto1  = UInt(resolution.W),
     outputProto2  = Bool(),
-    outputProto3  = UInt(log2Ceil(maxUsers).W),
-    outputProto4  = DspComplex(SInt(resolution.W), SInt(resolution.W))))
+    outputProto3  = UInt(log2Ceil(maxUsers).W)))
 
   val variableDelay = Module(new prog_delay(proto = DspComplex(SInt(n.W), SInt(n.W)), maxdelay = 64))
   val syncSearchEdgeDetector = Module(new edge_detector())
@@ -114,11 +110,6 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits, W <: DspComple
 
   val sampleType = DspComplex(SInt(n.W), SInt(n.W)).cloneType
   val inRegType  = DspComplex(FixedPoint(n.W, (n-2).BP), FixedPoint(n.W, (n-2).BP)).cloneType
-
-  // FIXME for development only
-  val crossPowerType = DspComplex(FixedPoint(resolution.W, (resolution-2).BP), FixedPoint(resolution.W, (resolution-2).BP)).cloneType
-  val crossPowerReg  = RegInit(0.U.asTypeOf(crossPowerType))
-  val crossOutType   = DspComplex(SInt(resolution.W), SInt(resolution.W))
 
   // The Legacy Long Training Field (L-LTF), from IEEE 802.11-2012, Annex L.
   val longTrainingField =
@@ -261,14 +252,23 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits, W <: DspComple
   val signalStrength = rssiChain(rssiTaps.length)
   io.signalPower := signalStrength  // Used for debugging
 
-  // Here the cross-correlated and filtered.
-  val delayedSample = ShiftRegister(inReg, frameDetectionWindowLength)
+  // Here the signal is autocorrelated and filtered.  This is
+  // used to detect the training fields at the beginning of
+  // the frame.
+  //
+  // It's really an autocorrelation, despite the "cross" prefix
+  // of the variable names.
+  //
+  val crossPowerType = DspComplex(FixedPoint(resolution.W, (resolution-2).BP),
+                                  FixedPoint(resolution.W, (resolution-2).BP))
+  val crossPowerReg  = RegInit(0.U.asTypeOf(crossPowerType))
+  val delayedSample  = ShiftRegister(inReg, frameDetectionWindowLength)
+
   crossPowerReg := inReg * (delayedSample.conj())
   val crossPowerReal = RegInit(0.S(resolution.W))
   val crossPowerImag = RegInit(0.S(resolution.W))
   crossPowerReal := (crossPowerReg.real >> 5).asSInt
   crossPowerImag := (crossPowerReg.imag >> 5).asSInt
-  val scaledCrossPower = DspComplex.wire(crossPowerReal, crossPowerImag)
 
   // Compute the filtered cross power
   // The real and imaginary parts are filtered separately, since the taps are
@@ -304,12 +304,12 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits, W <: DspComple
     crossMagnitudeReg := (realCrossChain(realCrossTaps.length).abs().asUInt >> 2) + imagCrossChain(imagCrossTaps.length).abs().asUInt
   }
 
-  val crossOutReg   = RegInit(0.S.asTypeOf(DspComplex(SInt(resolution.W), SInt(resolution.W))))
-  val crossPowerOut = DspComplex.wire(realCrossChain(realCrossTaps.length),
-                                      imagCrossChain(imagCrossTaps.length))
+  val frameThresholdReg = RegInit(0.U(thresholdBits.W))
+  val frameFound        = RegInit(false.B)
+  frameThresholdReg := frameThreshold
 
-  crossOutReg := crossPowerOut
-  io.crossPower := crossOutReg.asTypeOf(crossOutType)
+  // chose whether to assert frameFound.
+
   io.crossMagnitude := crossMagnitudeReg
 
   // Compute the correlation with the long training field (L-LTF)
@@ -438,9 +438,6 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits, W <: DspComple
 
   val detectedPeakIndex = RegInit(0.U(windowCounterLength.W))
 
-  val threshold = RegInit(0.U(thresholdBits.W))
-  threshold := io.syncThreshold
-
   //
   // Control interface
   //
@@ -459,9 +456,11 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits, W <: DspComple
   syncSearchEdgeDetector.io.A := io.syncSearch
   passThruReg               := io.passThru
   when (syncSearchEdgeDetector.io.rising && (! passThruReg)) {
-       frameSyncFlagInhibit := false.B
+      frameSyncFlagInhibit := false.B
+      frameFound           := false.B   // reset frameFound after syncSearch is asserted
   } .elsewhen (passThruReg) {
-       frameSyncFlagInhibit := true.B
+      frameSyncFlagInhibit := true.B
+      frameFound           := false.B   // do not assert frameFound in passThru mode
   }
 
   val userNumber = RegInit(0.U(log2Ceil(maxUsers).W))
@@ -479,11 +478,17 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits, W <: DspComple
       previousPeakVal   := currentPeakVal
       previousPeakIndex := currentPeakIndex
 
-      when ((! frameSyncFlagInhibit) &&
-        (peakFactor * previousPeakVal.asTypeOf(peakFactorType) > currentPeakVal.asTypeOf(peakFactorType)) &&
-        (previousPeakVal > (signalStrength >> 4) * threshold)) {
-           frameSyncFlag               := true.B
-           frameSyncFlagInhibit        := true.B
+    // Only assert the frameSync flag if...
+    //
+    //    1. a frame preamble has been detected, and
+    //    2. frameSyncFlagInhibit is not set, and
+    //    3. The step down in matched filter peak height
+    //       meets the criterion.
+    //
+      when (frameFound && (! frameSyncFlagInhibit) &&
+        (peakFactor * previousPeakVal.asTypeOf(peakFactorType) > currentPeakVal.asTypeOf(peakFactorType))) {
+           frameSyncFlag          := true.B
+           frameSyncFlagInhibit   := true.B
            userNumber             := userNumber + 1.U
            savedOFDMSymbolCounter := ofdmSymbolCounter
            ofdmSymbolSync         := true.B
