@@ -21,8 +21,8 @@
 //                     asserts them.
 //    frameThreshold:  An 8 bit unsigned that sets the threshold for frame detection.
 //                     Synchronization is achieved when the first time the sync
-//                     threshold is exceeded after the frame  short training sequence
-//                     is detected.
+//                     threshold is exceeded after the frame short training sequence
+//                     is detected.  Try 100 at first.
 //    frameSync:       A bool that, when asserted, marks the first bit of the L-LTF
 //                     in the iqSyncedSamples output.
 //    symbolSync:      A pulse that goes high at the start of each OFDM symbol.
@@ -37,12 +37,10 @@
 //                     equation 7.13.
 //    signalPower:     The square magnitude of the input samples, filtered by a 64
 //                     sample boxcar integrator.
-//    crossPower:      The autocorrelation of the input signal with a lag of 32 samples,
-//                     filtered by a 32 sample boxcar integrator.
-//    crossMagnitude:  The (approximate) magnitude of crossPower.  Computed using the
-//                     formula
+//    crossMagnitude:  The (approximate) magnitude of lag 32 autocorrelation of the input
+//                     signal.  The formula used is
 //
-//                         approxMag = 1.0 * max(|I|, |Q|) + 0.25 * min(|I|, |Q|)
+//                         approxMag = 1.0 * max(|I|, |Q|) + 0.25 * min(|I|, |Q|)  ,
 //
 //                     where the multiplication by 0.25 is implmented by a shift.
 //
@@ -306,9 +304,12 @@ class f2_symbol_sync[T <: DspComplex[SInt], U <: UInt, V <: Bits] (
 
   val frameThresholdReg = RegInit(0.U(thresholdBits.W))
   val frameFound        = RegInit(false.B)
-  frameThresholdReg := frameThreshold
+  frameThresholdReg := io.frameThreshold
 
   // chose whether to assert frameFound.
+  when (crossMagnitudeReg > frameThresholdReg * (signalStrength >> 3)) {
+    frameFound := true.B
+  }
 
   io.crossMagnitude := crossMagnitudeReg
 
@@ -569,13 +570,12 @@ object f2_symbol_sync extends App {
         controlProto2 = UInt(8.W),
         outputProto1  = UInt(32.W),
         outputProto2  = Bool(),
-        outputProto3  = UInt(4.W),
-        outputProto4  = DspComplex(SInt(32.W), SInt(32.W)))
+        outputProto3  = UInt(4.W))
     )
 }
 
 //This is a simple unit tester for demonstration purposes
-class unit_tester(c: f2_symbol_sync[DspComplex[SInt], UInt, Bool, DspComplex[SInt]]) extends DspTester(c) {
+class unit_tester(c: f2_symbol_sync[DspComplex[SInt], UInt, Bool]) extends DspTester(c) {
 //Tests are here
     poke(c.io.iqSamples.real, 5)
     poke(c.io.iqSamples.imag, 102)
@@ -591,8 +591,7 @@ object unit_test extends App {
             controlProto2 = UInt(8.W),
             outputProto1  = UInt(32.W),
             outputProto2  = Bool(),
-            outputProto3  = UInt(4.W),
-            outputProto4  = DspComplex(SInt(32.W), SInt(32.W)))
+            outputProto3  = UInt(4.W))
         )
     {
             c=>new unit_tester(c)
