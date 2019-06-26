@@ -6,7 +6,7 @@ organization := "Chisel-blocks"
 
 name := "f2_symbol_sync"
 
-version := scala.sys.process.Process("git rev-parse --short HEAD").!!.mkString.replaceAll("\\s", "")+"-SNAPSHOT"
+version := scala.sys.process.Process("git rev-parse --short HEAD").!!.mkString.replaceAll("\\s", "")
 
 scalaVersion := "2.12.3"
 
@@ -41,7 +41,7 @@ def javacOptionsVersion(scalaVersion: String): Seq[String] = {
 // for those modules not version controlled by Maven or equivalent
 def gitSubmoduleHashSnapshotVersion(submod: String): String = {
     val shellcommand =  "git submodule status | grep %s | awk '{print substr($1,0,7)}'".format(submod)
-    scala.sys.process.Process(Seq("/bin/sh", "-c", shellcommand )).!!.mkString.replaceAll("\\s", "")+"-SNAPSHOT"
+    scala.sys.process.Process(Seq("/bin/sh", "-c", shellcommand )).!!.mkString.replaceAll("\\s", "")
 }
 
 
@@ -61,7 +61,7 @@ resolvers += "Sonatype Releases" at "https://oss.sonatype.org/content/repositori
 // Provide a managed dependency on X if -DXVersion="" is supplied on the command line.
 // [TODO] is simpler clearer?
 val defaultVersions = Map(
-  "chisel3" -> "3.1.6",
+  "chisel3" -> "3.1.7",
   "chisel-iotesters" -> "1.2.9",
   "dsptools" -> "1.1.8"
   )
@@ -91,6 +91,6 @@ libraryDependencies  ++= Seq(
 //libraryDependencies += "edu.berkeley.cs" %% "eagle_serdes" % "0.0-SNAPSHOT"
 
 // Put your git-version controlled snapshots here
-libraryDependencies += "edu.berkeley.cs" %% "prog_delay" % gitSubmoduleHashSnapshotVersion("prog_delay")
-libraryDependencies += "edu.berkeley.cs" %% "edge_detector" % gitSubmoduleHashSnapshotVersion("edge_detector")
+libraryDependencies += "Chisel-blocks" %% "prog_delay" % gitSubmoduleHashSnapshotVersion("prog_delay")
+libraryDependencies += "Chisel-blocks" %% "edge_detector" % gitSubmoduleHashSnapshotVersion("edge_detector")
 
